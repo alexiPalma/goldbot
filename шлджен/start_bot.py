@@ -10,10 +10,8 @@ try:
 except Exception as e:
     print(f'[KEYWORDS] sitecustomize load error: {e}', flush=True)
 
-# The old loader tried to inject the bank from Dispatcher.include_router().
-# That happens BEFORE bot.py creates `db`, so the extension was never loaded.
-# Instead, hook DB.__init__: bot.py creates DB before starting polling, and at
-# that exact moment both the DB and Dispatcher already exist in __main__.
+# Bank extension must be installed after DB exists, while bot.py is still
+# being defined. Hook DB.__init__ for the router/database part.
 try:
     from database import DB as _DB
     _old_db_init = _DB.__init__
@@ -26,20 +24,16 @@ try:
             return
         a = sys.modules.get('__main__') or sys.modules.get('bot')
         if a is None or not hasattr(a, 'dp'):
-            print('[EXT] Dispatcher is not available yet.', flush=True)
             return
         try:
             if not hasattr(a, 'db'):
                 a.db = self
             import bank_brand
             bank_brand.inject(a, a.dp, a.dp.include_router)
-            try:
-                import bank_keywords
-                bank_keywords.inject(a, a.dp)
-            except Exception as e:
-                print(f'[EXT] keyword extension error: {e}', flush=True)
+            import bank_keywords
+            bank_keywords.inject(a, a.dp)
             _extensions_done = True
-            print('[EXT] Bank + branding + keywords loaded.', flush=True)
+            print('[EXT] Bank database/router loaded.', flush=True)
         except Exception:
             print('[EXT] extension error during DB initialization:', flush=True)
             traceback.print_exc()
@@ -48,6 +42,39 @@ try:
 except Exception:
     print('[EXT] DB extension loader error:', flush=True)
     traceback.print_exc()
+
+# bot.py defines main_k() AFTER DB initialization. Therefore a normal import
+# hook cannot safely replace it at that point. This trace watches only until
+# main_k appears, wraps it once, then removes itself. This guarantees the
+# actual /start menu contains the Bank button regardless of startup timing.
+_trace_done = False
+
+def _inject_bank_menu(frame, event, arg):
+    global _trace_done
+    if _trace_done:
+        return None
+    if event == 'line' and frame.f_globals.get('__name__') == '__main__':
+        fn = frame.f_globals.get('main_k')
+        if callable(fn) and not getattr(fn, '_gold_bank_wrapped', False):
+            try:
+                import bank_keywords
+                old = fn
+                def main_k_with_bank(uid):
+                    markup = old(uid)
+                    return bank_keywords._add_button(markup, '🏦 Банк', 'bank')
+                main_k_with_bank._gold_bank_wrapped = True
+                frame.f_globals['main_k'] = main_k_with_bank
+                _trace_done = True
+                sys.settrace(None)
+                print('[EXT] Bank button injected into main menu.', flush=True)
+            except Exception:
+                print('[EXT] main menu injection error:', flush=True)
+                traceback.print_exc()
+                _trace_done = True
+                sys.settrace(None)
+    return _inject_bank_menu
+
+sys.settrace(_inject_bank_menu)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 BOT = os.path.join(BASE, 'bot.py')
