@@ -2,40 +2,52 @@ import os
 import runpy
 import time
 import traceback
+import sys
 
-# Explicitly load keyword routing before bot.py starts.
+# Load keyword support module before bot.py.
 try:
     import sitecustomize  # noqa: F401
 except Exception as e:
     print(f'[KEYWORDS] sitecustomize load error: {e}', flush=True)
 
-# Inject extensions only after bot.py has created its DB object.
+# The old loader tried to inject the bank from Dispatcher.include_router().
+# That happens BEFORE bot.py creates `db`, so the extension was never loaded.
+# Instead, hook DB.__init__: bot.py creates DB before starting polling, and at
+# that exact moment both the DB and Dispatcher already exist in __main__.
 try:
-    from aiogram import Dispatcher
-    _old_include = Dispatcher.include_router
+    from database import DB as _DB
+    _old_db_init = _DB.__init__
+    _extensions_done = False
 
-    def _include_with_extensions(self, router):
-        result = _old_include(self, router)
-        if not getattr(self, '_gold_extensions_loaded', False):
-            import sys
-            a = sys.modules.get('__main__') or sys.modules.get('bot')
-            if a is not None and hasattr(a, 'DB'):
-                try:
-                    if not hasattr(a, 'db'):
-                        a.db = a.DB
-                    import bank_brand
-                    bank_brand.inject(a, self, _old_include)
-                    import bank_keywords
-                    bank_keywords.inject(a, self)
-                    self._gold_extensions_loaded = True
-                    print('[EXT] Bank + branding loaded.', flush=True)
-                except Exception as e:
-                    print(f'[EXT] extension error: {e}', flush=True)
-        return result
+    def _db_init_with_extensions(self, *args, **kwargs):
+        global _extensions_done
+        _old_db_init(self, *args, **kwargs)
+        if _extensions_done:
+            return
+        a = sys.modules.get('__main__') or sys.modules.get('bot')
+        if a is None or not hasattr(a, 'dp'):
+            print('[EXT] Dispatcher is not available yet.', flush=True)
+            return
+        try:
+            if not hasattr(a, 'db'):
+                a.db = self
+            import bank_brand
+            bank_brand.inject(a, a.dp, a.dp.include_router)
+            try:
+                import bank_keywords
+                bank_keywords.inject(a, a.dp)
+            except Exception as e:
+                print(f'[EXT] keyword extension error: {e}', flush=True)
+            _extensions_done = True
+            print('[EXT] Bank + branding + keywords loaded.', flush=True)
+        except Exception:
+            print('[EXT] extension error during DB initialization:', flush=True)
+            traceback.print_exc()
 
-    Dispatcher.include_router = _include_with_extensions
-except Exception as e:
-    print(f'[EXT] extension loader error: {e}', flush=True)
+    _DB.__init__ = _db_init_with_extensions
+except Exception:
+    print('[EXT] DB extension loader error:', flush=True)
+    traceback.print_exc()
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 BOT = os.path.join(BASE, 'bot.py')
