@@ -13,7 +13,6 @@ if Router is not None and Dispatcher is not None:
     installed = False
 
     def app():
-        # start_bot.py executes bot.py as __main__.
         return sys.modules.get('__main__') or sys.modules.get('bot')
 
     actions = {
@@ -50,19 +49,60 @@ if Router is not None and Dispatcher is not None:
         text = (getattr(m, 'text', None) or '').strip()
         if not text or text.startswith('/') or not getattr(m, 'from_user', None):
             return False
-        a = app()
-        if a is None or getattr(a, 'state', {}).get(m.from_user.id):
-            return False
         parts = text.lower().split()
-        if len(parts) == 1:
-            return parts[0] in actions or parts[0] in games
-        if len(parts) == 2 and parts[0] in games:
+        # Recognized actions/games must remain usable even if an old multi-step
+        # state is stuck. This lets "обменник", "заработать", etc. reset the flow.
+        if len(parts) == 1 and (parts[0] in actions or parts[0] in games):
+            return True
+        if len(parts) in (2, 3) and parts[0] in games:
             try:
                 Decimal(parts[1].replace("'", '').replace(',', '.'))
                 return True
             except Exception:
                 return False
+        # Direct transfer: "Перевод @username 100" or "Перевод username 100 gold".
+        if parts[0] in ('перевод', 'перевести') and len(parts) in (3, 4):
+            try:
+                Decimal(parts[2].replace("'", '').replace(',', '.'))
+                return True
+            except Exception:
+                return False
         return False
+
+    async def direct_transfer(m, username, amount, currency='Goldcoin'):
+        a = app(); uid = m.from_user.id
+        username = username.strip().rstrip(',')
+        try:
+            amount = Decimal(amount.replace("'", '').replace(',', '.'))
+        except Exception:
+            return await m.answer('❌ Сумма должна быть положительным целым числом.')
+        if amount <= 0 or amount != amount.to_integral_value():
+            return await m.answer('❌ Сумма должна быть положительным целым числом.')
+        cur = currency.lower()
+        if cur in ('goldcoin', 'коин', 'коины', 'gc'):
+            currency = 'Goldcoin'
+        elif cur in ('gold', 'голд'):
+            currency = 'gold'
+        else:
+            return await m.answer('❌ Валюта: Goldcoin или gold.')
+        dst = a.db.find(username)
+        if not dst:
+            return await m.answer('❌ Пользователь не найден. Проверь @username и убедись, что пользователь уже запускал бота.')
+        if dst['id'] == uid:
+            return await m.answer('❌ Нельзя переводить самому себе.')
+        available = a.db.balance(uid)[0 if currency.lower() == 'goldcoin' else 1]
+        if amount > available:
+            return await m.answer(f'❌ Недостаточно {currency}.\n\nДоступно: <b>{a.fmt(available)} {currency}</b>\nТребуется: <b>{a.fmt(amount)} {currency}</b>', parse_mode='HTML')
+        # Direct syntax is the fast form. Keep the existing button wizard as
+        # the second, fully confirmed form.
+        ok, msg = a.db.transfer(uid, dst['id'], currency, amount)
+        if not ok:
+            return await m.answer('❌ ' + msg)
+        try:
+            await a.bot.send_message(dst['id'], f'💸 <b>ВАМ ПОСТУПИЛ ПЕРЕВОД</b>\n`{a.SEP}`\n\nОт: {a.uname(uid)}\nСумма: <b>{a.fmt(amount)} {currency}</b>\n\n{a.bal(dst["id"])}', parse_mode='HTML')
+        except Exception:
+            pass
+        return await m.answer(f'✅ <b>ПЕРЕВОД ВЫПОЛНЕН</b>\n`{a.SEP}`\n\nПолучатель: {a.uname(dst["id"])}\nСумма: <b>{a.fmt(amount)} {currency}</b>\n\n{a.bal(uid)}', parse_mode='HTML')
 
     async def handler(m):
         a = app()
@@ -70,6 +110,11 @@ if Router is not None and Dispatcher is not None:
         low = text.lower()
         uid = m.from_user.id
         parts = low.split()
+
+        # Fast transfer syntax. Supports both @username and username, plus an
+        # optional fourth currency token.
+        if parts[0] in ('перевод', 'перевести') and len(parts) in (3, 4):
+            return await direct_transfer(m, parts[1], parts[2], parts[3] if len(parts) == 4 else 'Goldcoin')
 
         if parts[0] in games:
             game, emoji = games[parts[0]]
@@ -100,21 +145,27 @@ if Router is not None and Dispatcher is not None:
                 return await m.answer(f'{dice_emoji} <b>{title}</b>\n{a.SEP}\n\n{result_text}\n{money} {a.currency_primary()}\n\n{a.bal(uid)}', parse_mode='HTML')
 
             if game == 'dice':
+                a.state.pop(uid, None)
                 return await m.answer(f'🎲 <b>КУБИК</b>\n{a.SEP}\n\nВыбери число от 1 до 6:\n\nСтавка: <b>{a.fmt(bet)} {a.currency_primary()}</b>', parse_mode='HTML', reply_markup=a.dice_guess_k(bet))
             if game == 'dice2':
-                return await m.answer(f'🎲 <b>КОСТИ</b>\n{a.SEP}\n\nВыбери условие и число:\n\nСтавка: <b>{a.fmt(bet)} {a.currency_primary()}</b>', parse_mode='HTML', reply_markup=a.dice_condition_k(bet))
+                a.state.pop(uid, None)
+                return await m.answer(f'🎲 <b>КОСТИ</b>\n{a.SEP}\n\nВыбери условие и число:\n\nСтавка: <b>{a.fmt(bet)} {a.currency_primary()}</b>', parse_mode='HTML', reply_markup=a.dice_condition_target_k(bet))
             if game == 'coin':
+                a.state.pop(uid, None)
                 return await m.answer(f'🪙 <b>МОНЕТА</b>\n{a.SEP}\n\nВыбери сторону:\n\nСтавка: <b>{a.fmt(bet)} {a.currency_primary()}</b>', parse_mode='HTML', reply_markup=a.coin_k(bet))
             if game == '21':
+                a.state.pop(uid, None)
                 g = a.games.blackjack_start(uid, bet)
                 if not g:
                     return await m.answer('❌ Не удалось начать игру. Недостаточно средств или игра уже идёт.')
                 return await a.show(m, a.bj_text(g, hide=True), a.bj_k())
             if game == 'mines':
+                a.state.pop(uid, None)
                 if not a.games.mines_start(uid, bet):
                     return await m.answer('❌ Не удалось начать игру. Недостаточно средств или игра уже идёт.')
                 return await a.show(m, '💣 <b>МИНЫ</b>\n' + a.SEP + f'\n\n💰 Ставка: <b>{a.fmt(bet)} {a.currency_primary()}</b>\n\nОткрывай клетки:', a.mines_k(a.games.mines[uid]))
             if game == 'tower':
+                a.state.pop(uid, None)
                 if not a.games.tower_start(uid, bet):
                     return await m.answer('❌ Не удалось начать игру. Недостаточно средств или игра уже идёт.')
                 return await a.show(m, '🗼 <b>БАШНЯ</b>\n' + a.SEP + f'\n\n💰 Ставка: <b>{a.fmt(bet)} {a.currency_primary()}</b>', a.tower_k())
@@ -123,6 +174,11 @@ if Router is not None and Dispatcher is not None:
         action = actions.get(low)
         if not action:
             return
+
+        # A recognized keyword intentionally starts a fresh flow. This fixes
+        # stale exchange/earn/admin states that previously treated the word
+        # itself as an amount or admin setting.
+        a.state.pop(uid, None)
         funcs = {
             'balance': lambda: m.answer(a.bal(uid), parse_mode='HTML'),
             'profile': lambda: a.profile(m), 'ref': lambda: a.ref(m),
@@ -144,7 +200,6 @@ if Router is not None and Dispatcher is not None:
         if fn:
             return await fn()
 
-    # The filter is critical: a catch-all handler would swallow /commands.
     kw.message.register(handler, keyword_filter)
 
     def patched_include(self, router):
