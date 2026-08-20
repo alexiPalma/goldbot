@@ -7,25 +7,28 @@ try:
 except Exception:
     Router = Dispatcher = None
 
-if Router and Dispatcher:
+if Router is not None and Dispatcher is not None:
     kw = Router(name='goldgame_keywords')
     original_include = Dispatcher.include_router
     installed = False
 
+    # bot.py is normally started with `python bot.py`, so its module name is
+    # __main__, NOT bot. The previous version looked only for sys.modules['bot'].
     def app():
-        return sys.modules.get('bot')
+        return sys.modules.get('__main__') or sys.modules.get('bot')
 
     async def handler(m):
         a = app()
-        if a is None or not getattr(m, 'text', None):
+        if a is None or not getattr(m, 'text', None) or not getattr(m, 'from_user', None):
             return
         text = m.text.strip()
         low = text.lower()
         if not text or low.startswith('/'):
             return
         uid = m.from_user.id
-        # Never steal text from an active multi-step input.
-        if a.state.get(uid):
+
+        # Existing multi-step input must keep priority over keyword commands.
+        if getattr(a, 'state', {}).get(uid):
             return
 
         actions = {
@@ -33,7 +36,7 @@ if Router and Dispatcher:
             'профиль': 'profile', 'проф': 'profile',
             'реф': 'ref', 'рефы': 'ref', 'реферал': 'ref', 'рефералы': 'ref',
             'топ': 'top', 'игры': 'play', 'игра': 'play', 'плей': 'play',
-            'бонус': 'bonus', 'дейли': 'daily', 'ежедневный': 'daily',
+            'бонус': 'bonus', 'дейли': 'daily', 'ежедневный': 'daily', 'ежедневка': 'daily',
             'лотерея': 'lottery', 'лот': 'lottery',
             'кейсы': 'cases', 'кейс': 'cases',
             'перевод': 'transfer', 'перевести': 'transfer',
@@ -46,7 +49,8 @@ if Router and Dispatcher:
         games = {
             'баскет': ('basket', '🏀'), 'баскетбол': ('basket', '🏀'),
             'футбол': ('football', '⚽'), 'фут': ('football', '⚽'),
-            'дартс': ('darts', '🎯'), 'боулинг': ('bowling', '🎳'), 'боул': ('bowling', '🎳'),
+            'дартс': ('darts', '🎯'),
+            'боулинг': ('bowling', '🎳'), 'боул': ('bowling', '🎳'),
             'кубик': ('dice', '🎲'), 'куб': ('dice', '🎲'),
             'монета': ('coin', '🪙'), 'спин': ('spin', '🎰'),
             'мины': ('mines', '💣'), 'мина': ('mines', '💣'),
@@ -65,6 +69,7 @@ if Router and Dispatcher:
             if bet <= 0 or bet != bet.to_integral_value():
                 return await m.answer('❌ Ставка должна быть положительным целым числом.')
             bet = int(bet)
+
             balance = a.db.balance(uid)[0]
             if balance < bet:
                 return await m.answer(
@@ -80,13 +85,14 @@ if Router and Dispatcher:
                 if result is None:
                     return await m.answer('❌ Не удалось сделать ставку. Недостаточно средств.')
                 win, payout = result
+                title = {'basket':'БАСКЕТБОЛ','football':'ФУТБОЛ','darts':'ДАРТС','bowling':'БОУЛИНГ'}[game]
+                result_text = '🎯 <b>ПОПАЛ!</b>' if win else '❌ <b>МИМО!</b>'
+                money = f'🎉 Выигрыш: +{a.fmt(payout)}' if win else f'💸 Проигрыш: −{a.fmt(bet)}'
                 return await m.answer(
-                    f'{dice_emoji} <b>{game.upper()}</b>\n{a.SEP}\n\n'
-                    f'{"🎯 ПОПАЛ!" if win else "❌ МИМО!"}\n'
-                    f'{"🎉 Выигрыш: +" + a.fmt(payout) if win else "💸 Проигрыш: −" + a.fmt(bet)} {a.currency_primary()}\n\n'
-                    f'{a.bal(uid)}', parse_mode='HTML')
+                    f'{dice_emoji} <b>{title}</b>\n{a.SEP}\n\n'
+                    f'{result_text}\n{money} {a.currency_primary()}\n\n{a.bal(uid)}',
+                    parse_mode='HTML')
 
-            # For the remaining games use their existing UI and callback flow.
             if game == 'dice':
                 return await m.answer(f'🎲 <b>КУБИК</b>\n{a.SEP}\n\nВыбери число от 1 до 6:\n\nСтавка: <b>{a.fmt(bet)} {a.currency_primary()}</b>', parse_mode='HTML', reply_markup=a.dice_guess_k(bet))
             if game == 'dice2':
@@ -111,14 +117,23 @@ if Router and Dispatcher:
         action = actions.get(low)
         if not action:
             return
+
         funcs = {
             'balance': lambda: m.answer(a.bal(uid), parse_mode='HTML'),
-            'profile': lambda: a.profile(m), 'ref': lambda: a.ref(m), 'top': lambda: a.top(m),
-            'play': lambda: a.play(m), 'bonus': lambda: a.bonus(m), 'daily': lambda: a.daily(m),
-            'lottery': lambda: a.open_lottery(m), 'cases': lambda: a.cases(m),
-            'transfer': lambda: a.transfer_open(m), 'exchange': lambda: a.exchange_open(m),
-            'earn': lambda: a.earn_open(m), 'donate': lambda: a.donate(m),
-            'help': lambda: a.help_cmd(m), 'rules': lambda: a.rules(m)
+            'profile': lambda: a.profile(m),
+            'ref': lambda: a.ref(m),
+            'top': lambda: a.top(m),
+            'play': lambda: a.play(m),
+            'bonus': lambda: a.bonus(m),
+            'daily': lambda: a.daily(m),
+            'lottery': lambda: a.open_lottery(m),
+            'cases': lambda: a.cases(m),
+            'transfer': lambda: a.transfer_open(m),
+            'exchange': lambda: a.exchange_open(m),
+            'earn': lambda: a.earn_open(m),
+            'donate': lambda: a.donate(m),
+            'help': lambda: a.help_cmd(m),
+            'rules': lambda: a.rules(m)
         }
         if action == 'promo':
             a.state[uid] = {'promo': True}
@@ -131,6 +146,8 @@ if Router and Dispatcher:
         if fn:
             return await fn()
 
+    # Register on our router. It is inserted before the existing application
+    # router by the patched Dispatcher.include_router below.
     kw.message.register(handler)
 
     def patched_include(self, router):
