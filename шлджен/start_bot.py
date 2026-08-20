@@ -9,17 +9,34 @@ try:
 except Exception as e:
     print(f'[KEYWORDS] sitecustomize load error: {e}', flush=True)
 
-# Inject the bank and branding router when bot.py registers its main router.
+# Inject bank/branding only after bot.py has created its DB object.
+# The previous implementation injected during the first include_router call,
+# which happens before DB is assigned in bot.py and caused AttributeError.
 try:
     from aiogram import Dispatcher
-    import bank_brand
     _old_include = Dispatcher.include_router
+    _patched = False
+
     def _include_with_bank(self, router):
-        import sys
-        a = sys.modules.get('__main__') or sys.modules.get('bot')
-        if a is not None and not getattr(self, '_gold_bank_router', False):
-            bank_brand.inject(a, self, _old_include)
-        return _old_include(self, router)
+        global _patched
+        result = _old_include(self, router)
+        if not getattr(self, '_gold_bank_router', False):
+            import sys
+            a = sys.modules.get('__main__') or sys.modules.get('bot')
+            # bot.py has created DB by the time it reaches its first
+            # include_router call, so use the actual DB global (and alias it
+            # as db for the extension's API).
+            if a is not None and hasattr(a, 'DB'):
+                try:
+                    if not hasattr(a, 'db'):
+                        a.db = a.DB
+                    import bank_brand
+                    bank_brand.inject(a, self, _old_include)
+                    self._gold_bank_router = True
+                except Exception as e:
+                    print(f'[BANK] extension error: {e}', flush=True)
+        return result
+
     Dispatcher.include_router = _include_with_bank
 except Exception as e:
     print(f'[BANK] extension load error: {e}', flush=True)
