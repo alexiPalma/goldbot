@@ -1,0 +1,14 @@
+FINAL FIX PASS — 2026-08-20
+
+Fixed:
+- Basketball now shows Popal/Mimo + win/loss + balance after the real Telegram basketball animation.
+- Removed Fortune from the games menu; Spin is the only slot game.
+- Spin uses Telegram's real slot-machine animation and decodes the server-side result consistently.
+- 21 crash fixed: card values J/Q/K/A no longer raise an exception.
+- Coin now has a visible emoji flip animation before the result. Telegram Bot API has no native 🪙 sendDice type, so this is a UI animation rather than a native dice animation.
+- /admin now has a direct command handler and opens the admin panel for authorized IDs.
+- Transfer is now a button-driven flow: username -> currency (Goldcoin/gold) -> amount -> confirmation.
+- Gold transfers between players are supported by the transfer flow; gold is still only created/issued through admin or existing balances.
+- Light and Express cases now charge the price and open a 9-cell grid. The player chooses one cell before receiving a result.
+- Free case keeps 9 cells and 2 attempts, with opened cells tracked.
+- Removed technical web.telegram.org emoji URLs from generated messages.
