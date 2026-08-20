@@ -9,37 +9,33 @@ try:
 except Exception as e:
     print(f'[KEYWORDS] sitecustomize load error: {e}', flush=True)
 
-# Inject bank/branding only after bot.py has created its DB object.
-# The previous implementation injected during the first include_router call,
-# which happens before DB is assigned in bot.py and caused AttributeError.
+# Inject extensions only after bot.py has created its DB object.
 try:
     from aiogram import Dispatcher
     _old_include = Dispatcher.include_router
-    _patched = False
 
-    def _include_with_bank(self, router):
-        global _patched
+    def _include_with_extensions(self, router):
         result = _old_include(self, router)
-        if not getattr(self, '_gold_bank_router', False):
+        if not getattr(self, '_gold_extensions_loaded', False):
             import sys
             a = sys.modules.get('__main__') or sys.modules.get('bot')
-            # bot.py has created DB by the time it reaches its first
-            # include_router call, so use the actual DB global (and alias it
-            # as db for the extension's API).
             if a is not None and hasattr(a, 'DB'):
                 try:
                     if not hasattr(a, 'db'):
                         a.db = a.DB
                     import bank_brand
                     bank_brand.inject(a, self, _old_include)
-                    self._gold_bank_router = True
+                    import bank_keywords
+                    bank_keywords.inject(a, self)
+                    self._gold_extensions_loaded = True
+                    print('[EXT] Bank + branding loaded.', flush=True)
                 except Exception as e:
-                    print(f'[BANK] extension error: {e}', flush=True)
+                    print(f'[EXT] extension error: {e}', flush=True)
         return result
 
-    Dispatcher.include_router = _include_with_bank
+    Dispatcher.include_router = _include_with_extensions
 except Exception as e:
-    print(f'[BANK] extension load error: {e}', flush=True)
+    print(f'[EXT] extension loader error: {e}', flush=True)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 BOT = os.path.join(BASE, 'bot.py')
