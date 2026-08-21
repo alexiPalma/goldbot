@@ -12,13 +12,49 @@ from aiogram.dispatcher.event.bases import SkipHandler as _HoldSkipHandler
 def _hold_norm(text):
     return ' '.join((text or '').strip().lower().split())
 
+async def _hold_sports_game(m,game,bet):
+    emoji={'basket':'🏀','football':'⚽','darts':'🎯','bowling':'🎳'}[game]
+    labels={'basket':'Баскетбол','football':'Футбол','darts':'Дартс','bowling':'Боулинг'}
+    uid=m.from_user.id
+    if not games.cost(uid,bet,game+'_bet'):
+        return await m.answer(f'❌ <b>Недостаточно {html.escape(currency_primary())}</b>\n\n{bal(uid)}',parse_mode='HTML')
+    msg=await bot.send_dice(m.chat.id,emoji=emoji)
+    await asyncio.sleep(2)
+    value=msg.dice.value
+    win=value in ({'basket':{4,5},'football':{3,4,5},'darts':{6},'bowling':{6}}[game])
+    payout=Decimal(bet)*Decimal(db.setting('sport_multiplier') or '2') if win else Decimal(0)
+    games.finish(uid,game,bet,'hit' if win else 'miss',payout,win)
+    if win:
+        text=f"{emoji} <b>{labels[game]}</b>\n`{SEP}`\n\n🎯 <b>Попал!</b>\n💰 Выигрыш: <b>+{fmt(payout)} {html.escape(currency_primary())}</b>\n\n{bal(uid)}"
+    else:
+        text=f"{emoji} <b>{labels[game]}</b>\n`{SEP}`\n\n❌ <b>Мимо!</b>\n💸 Ставка: <b>−{fmt(bet)} {html.escape(currency_primary())}</b>\n\n{bal(uid)}"
+    return await m.answer(text,parse_mode='HTML',reply_markup=result_k(f'game:{game}'))
+
+async def _hold_spin_game(m,bet):
+    uid=m.from_user.id
+    if not games.cost(uid,bet,'spin_bet'):
+        return await m.answer(f'❌ <b>Недостаточно {html.escape(currency_primary())}</b>\n\n{bal(uid)}',parse_mode='HTML')
+    msg=await bot.send_dice(m.chat.id,emoji='🎰')
+    await asyncio.sleep(2.2)
+    v=int(msg.dice.value)
+    if v==64:
+        reels=['7️⃣','7️⃣','7️⃣']
+    else:
+        mapping=[1,2,3,0]; symbols=['🍒','🍋','🔔','7️⃣']
+        digits=[mapping[(v-1)&3],mapping[((v-1)>>2)&3],mapping[((v-1)>>4)&3]]
+        reels=[symbols[d] for d in digits]
+    win=len(set(reels))==1
+    payout=bet*Decimal(db.setting('spin_multiplier') or '5') if win else Decimal(0)
+    games.finish(uid,'spin',bet,'|'.join(reels),payout,win)
+    text=f"🎰 <b>СПИН</b>\n`{SEP}`\n\n{' '.join(reels)}\n\n"+(f"🎉 <b>ТРИ ОДИНАКОВЫХ!</b>\n💰 Выигрыш: <b>+{fmt(payout)} {html.escape(currency_primary())}</b>" if win else f"😔 <b>Комбинация не собрана.</b>\n💸 Ставка: <b>−{fmt(bet)} {html.escape(currency_primary())}</b>")+f"\n\n{bal(uid)}"
+    return await m.answer(text,parse_mode='HTML',reply_markup=result_k('game:spin'))
+
 async def _hold_keyword_handler(m:Message):
     text=(m.text or '').strip(); low=_hold_norm(text); p=low.split(); uid=m.from_user.id
     db.user(uid,m.from_user.username,m.from_user.first_name)
     if not low or low.startswith('/'):
         raise _HoldSkipHandler()
 
-    # Bank: exact menu and one-line operations.
     if low=='банк':
         import bank_brand as _bank
         return await m.answer(_bank.bank_text(sys.modules['__main__'],uid),reply_markup=_bank.bank_menu(),parse_mode='HTML')
@@ -53,8 +89,8 @@ async def _hold_keyword_handler(m:Message):
         game=aliases[p[0]]
         if db.balance(uid)[0]<amount:
             return await m.answer(f'❌ <b>Недостаточно {html.escape(currency_primary())}</b>\n\nБаланс: <b>{fmt(db.balance(uid)[0])} {html.escape(currency_primary())}</b>\nТребуется: <b>{fmt(amount)} {html.escape(currency_primary())}</b>',parse_mode='HTML')
-        if game in ('basket','football','darts','bowling'):return await sports_game(m,game,amount)
-        if game=='spin':return await spin_game(m,amount)
+        if game in ('basket','football','darts','bowling'):return await _hold_sports_game(m,game,amount)
+        if game=='spin':return await _hold_spin_game(m,amount)
         labels={'mines':'💣 Мины','tower':'🗼 Башня','21':'🃏 21','coin':'🪙 Монета','dice':'🎲 Кубик','dice2':'🎲 Кости'}
         return await m.answer(f"{labels[game]}\n`{SEP}`\n\nВыбери вариант игры:",reply_markup=bet_k(game),parse_mode='HTML')
     raise _HoldSkipHandler()
@@ -63,7 +99,6 @@ r.message.register(_hold_keyword_handler,F.text)
 if getattr(r.message,'handlers',None):
     _rec=r.message.handlers.pop(); r.message.handlers.insert(0,_rec)
 
-# Install bank only after every bot handler has been defined, immediately before polling.
 import bank_brand as _hold_bank
 _hold_bank.inject(sys.modules['__main__'],dp,r.include_router if hasattr(r,'include_router') else None)
 print('[EXT] Holdgame bank + universal keywords loaded.',flush=True)
