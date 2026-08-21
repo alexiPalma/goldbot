@@ -1,9 +1,14 @@
 import sys, html, re
 from decimal import Decimal, InvalidOperation
 from aiogram import F
+from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.dispatcher.event.bases import SkipHandler
 
 SEP='·····················'
+CHANNEL='@holdgamesnews'
+CHANNEL_URL='https://t.me/holdgamesnews'
+
 
 def app(): return sys.modules.get('__main__') or sys.modules.get('bot')
 
@@ -18,49 +23,138 @@ def init_db(a):
     a.db.set_setting('rate','45000')
     a.db.c.commit()
 
+
 def ensure_bank_user(a,uid):
     a.db.user(uid); a.db.c.execute('INSERT OR IGNORE INTO bank_balances(uid,goldcoin,gold) VALUES(?,?,?)',(uid,'0','0')); a.db.c.commit()
 
+
 def bank_bal(a,uid):
-    ensure_bank_user(a,uid); r=a.db.c.execute('SELECT goldcoin,gold FROM bank_balances WHERE uid=?',(uid,)).fetchone(); return Decimal(str(r['goldcoin'])),Decimal(str(r['gold']))
+    ensure_bank_user(a,uid)
+    r=a.db.c.execute('SELECT goldcoin,gold FROM bank_balances WHERE uid=?',(uid,)).fetchone()
+    return Decimal(str(r['goldcoin'])),Decimal(str(r['gold']))
+
 
 def bank_text(a,uid):
     p,g=bank_bal(a,uid)
     return f'🏦 <b>HOLDGAME БАНК</b>\n`{SEP}`\n\n🏦 <b>Банковский баланс</b>\n💰 {a.fmt(p)} {html.escape(a.currency_primary())}\n🪙 {a.fmt(g)} {html.escape(a.currency_premium())}\n\n<b>Что вы хотите сделать?</b>'
 
+
 def bank_menu():
-    b=InlineKeyboardBuilder(); b.button(text='📥 Положить',callback_data='bank:put'); b.button(text='📤 Снять',callback_data='bank:take'); b.button(text='❌ Отмена',callback_data='bank:cancel'); b.adjust(2,1); return b.as_markup()
+    b=InlineKeyboardBuilder()
+    b.button(text='📥 Положить',callback_data='bank:put')
+    b.button(text='📤 Снять',callback_data='bank:take')
+    b.button(text='❌ Отмена',callback_data='bank:cancel')
+    b.adjust(2,1)
+    return b.as_markup()
+
 
 def currency_menu(action):
-    b=InlineKeyboardBuilder(); b.button(text='💰 hCoin',callback_data=f'bank:currency:{action}:Goldcoin'); b.button(text='🪙 HPOINT',callback_data=f'bank:currency:{action}:gold'); b.button(text='❌ Отмена',callback_data='bank:cancel'); b.adjust(2,1); return b.as_markup()
+    b=InlineKeyboardBuilder()
+    b.button(text='💰 hCoin',callback_data=f'bank:currency:{action}:Goldcoin')
+    b.button(text='🪙 HPOINT',callback_data=f'bank:currency:{action}:gold')
+    b.button(text='❌ Отмена',callback_data='bank:cancel')
+    b.adjust(2,1)
+    return b.as_markup()
+
 
 def back_bank():
     b=InlineKeyboardBuilder(); b.button(text='❌ Отмена',callback_data='bank:cancel'); return b.as_markup()
 
+
+def sub_keyboard():
+    b=InlineKeyboardBuilder()
+    b.button(text='📢 Подписаться на канал',url=CHANNEL_URL)
+    b.button(text='✅ Проверить подписку',callback_data='subscription:check')
+    b.adjust(1,1)
+    return b.as_markup()
+
+
+def sub_text():
+    return ('🔐 <b>ДОСТУП К HOLDGAME</b>\n'
+            f'`{SEP}`\n\n'
+            'Чтобы пользоваться ботом, сначала подпишись на наш канал.\n\n'
+            '📢 <b>Канал:</b> @holdgamesnews\n\n'
+            'После подписки нажми кнопку <b>«Проверить подписку»</b>.')
+
+
+async def is_subscribed(a,uid):
+    try:
+        member=await a.bot.get_chat_member(CHANNEL,uid)
+        return member.status in ('creator','administrator','member') or (member.status=='restricted' and getattr(member,'is_member',False))
+    except Exception:
+        return False
+
+
+async def subscription_message_guard(m):
+    a=app()
+    if a is None or not getattr(m,'from_user',None): raise SkipHandler()
+    text=(m.text or '').strip()
+    # /start is always allowed so a new user can receive the subscription screen.
+    if text.lower().split('@',1)[0]=='/start':
+        if not await is_subscribed(a,m.from_user.id):
+            await m.answer(sub_text(),reply_markup=sub_keyboard(),parse_mode='HTML')
+            return
+        raise SkipHandler()
+    if not await is_subscribed(a,m.from_user.id):
+        await m.answer(sub_text(),reply_markup=sub_keyboard(),parse_mode='HTML')
+        return
+    raise SkipHandler()
+
+
+async def subscription_callback_guard(c):
+    a=app()
+    if a is None: raise SkipHandler()
+    d=c.data or ''
+    if d=='subscription:check':
+        if await is_subscribed(a,c.from_user.id):
+            await c.answer('✅ Подписка подтверждена!',show_alert=True)
+            try:
+                await c.message.edit_text(a.home_text(c.from_user.id),reply_markup=a.main_k(c.from_user.id),parse_mode='HTML')
+            except Exception:
+                await c.message.answer(a.home_text(c.from_user.id),reply_markup=a.main_k(c.from_user.id),parse_mode='HTML')
+        else:
+            await c.answer('❌ Ты ещё не подписался на канал.',show_alert=True)
+        return
+    if not await is_subscribed(a,c.from_user.id):
+        await c.answer('❌ Сначала подпишись на @holdgamesnews.',show_alert=True)
+        return
+    raise SkipHandler()
+
+
 async def bank_callback(c):
     a=app(); uid=c.from_user.id; d=c.data or ''
-    if a is None:return False
+    if a is None:return
+    if not await is_subscribed(a,uid):
+        await c.answer('❌ Сначала подпишись на @holdgamesnews.',show_alert=True); return
     ensure_bank_user(a,uid)
     if d=='bank':
-        await c.answer(); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return True
+        await c.answer()
+        await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
     if d=='bank:cancel':
-        await c.answer(); a.state.pop(uid,None); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return True
+        await c.answer(); a.state.pop(uid,None)
+        await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
     if d=='bank:put':
-        await c.answer(); a.state[uid]={'bank':'currency','bank_action':'put'}; await c.message.edit_text('🏦 <b>ПОЛОЖИТЬ В БАНК</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('put'),parse_mode='HTML'); return True
+        await c.answer(); a.state[uid]={'bank':'currency','bank_action':'put'}
+        await c.message.edit_text('🏦 <b>ПОЛОЖИТЬ В БАНК</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('put'),parse_mode='HTML'); return
     if d=='bank:take':
-        await c.answer(); a.state[uid]={'bank':'currency','bank_action':'take'}; await c.message.edit_text('🏦 <b>СНЯТЬ С БАНКА</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('take'),parse_mode='HTML'); return True
+        await c.answer(); a.state[uid]={'bank':'currency','bank_action':'take'}
+        await c.message.edit_text('🏦 <b>СНЯТЬ С БАНКА</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('take'),parse_mode='HTML'); return
     if d.startswith('bank:currency:'):
-        await c.answer(); _,_,action,cur=d.split(':',3); a.state[uid]={'bank':'amount','bank_action':action,'currency':cur}; label=cur_name(a,cur)
-        await c.message.edit_text(f'🏦 <b>{"ПОЛОЖИТЬ" if action=="put" else "СНЯТЬ"}</b>\n`{SEP}`\n\nСколько {html.escape(label)} вы хотите {"положить в банк" if action=="put" else "снять с банка"}?\n\nВведите целое число:',reply_markup=back_bank(),parse_mode='HTML'); return True
-    return False
+        await c.answer(); _,_,action,cur=d.split(':',3)
+        a.state[uid]={'bank':'amount','bank_action':action,'currency':cur}
+        label=cur_name(a,cur)
+        await c.message.edit_text(f'🏦 <b>{"ПОЛОЖИТЬ" if action=="put" else "СНЯТЬ"}</b>\n`{SEP}`\n\nСколько {html.escape(label)} вы хотите {"положить в банк" if action=="put" else "снять с банка"}?\n\nВведите целое число:',reply_markup=back_bank(),parse_mode='HTML'); return
+
 
 async def bank_state_input(m,a):
     uid=m.from_user.id; s=a.state.get(uid,{})
     if s.get('bank')!='amount': return False
     text=(m.text or '').strip().replace("'",'').replace(' ','')
     try: amount=Decimal(text)
-    except (InvalidOperation,ValueError): await m.answer('❌ Введите положительное целое число.'); return True
-    if amount<=0 or amount!=amount.to_integral_value(): await m.answer('❌ Введите положительное целое число.'); return True
+    except (InvalidOperation,ValueError):
+        await m.answer('❌ Введите положительное целое число.'); return True
+    if amount<=0 or amount!=amount.to_integral_value():
+        await m.answer('❌ Введите положительное целое число.'); return True
     action=s.get('bank_action'); cur=s.get('currency'); col='goldcoin' if cur=='Goldcoin' else 'gold'; label=cur_name(a,cur); ensure_bank_user(a,uid)
     try:
         if action=='put':
@@ -82,6 +176,7 @@ async def bank_state_input(m,a):
         a.db.c.rollback(); a.state.pop(uid,None)
         await m.answer(f'❌ <b>Операция не выполнена.</b>\n\nПричина: <code>{html.escape(str(e))}</code>',parse_mode='HTML'); return True
 
+
 async def bank_message_handler(m):
     a=app(); uid=m.from_user.id; txt=(m.text or '').strip(); low=txt.lower(); parts=txt.split()
     if not txt or txt.startswith('/'): return False
@@ -89,23 +184,27 @@ async def bank_message_handler(m):
         if s.get('bank')=='amount': return await bank_state_input(m,a)
     if low=='банк':
         a.state.pop(uid,None); ensure_bank_user(a,uid); await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return True
-    if len(parts)==3 and parts[0].lower() in ('снять','положить') and parts[1].lower() in ('goldcoin','gold','hcoin','hpoint'):
-        curraw=parts[1].lower(); cur='Goldcoin' if curraw in ('goldcoin','hcoin') else 'gold'
-        a.state[uid]={'bank':'amount','bank_action':'take' if parts[0].lower()=='снять' else 'put','currency':cur}
-        return await bank_state_input(m,a)
     return False
+
 
 async def bank_command_handler(m):
     a=app(); uid=m.from_user.id; ensure_bank_user(a,uid); a.state.pop(uid,None); await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML')
 
-async def promo_message_handler(m):
-    a=app(); uid=m.from_user.id; txt=(m.text or '').strip(); parts=txt.split(maxsplit=1)
-    if not parts or parts[0].lower() not in ('промо','промокод'): return False
-    if len(parts)==1:
-        a.state[uid]={'promo':True}; await m.answer('🎟 <b>ПРОМОКОД</b>\n`'+SEP+'`\n\nВведи промокод:',parse_mode='HTML'); return True
-    ok,msg=a.db.use_promo(uid,parts[1].strip()); a.state.pop(uid,None); await m.answer((f'🎉 <b>Промокод активирован!</b>\n`{SEP}`\n\n{msg}\n\n{a.bal(uid)}') if ok else '❌ '+msg,parse_mode='HTML'); return True
 
 def patch_branding(a):
+    # Main menu: always expose Bank as a normal button.
+    old_main=getattr(a,'main_k',None)
+    if callable(old_main) and not getattr(old_main,'_hold_bank_brand',False):
+        def main_wrap(uid):
+            kb=old_main(uid)
+            try:
+                rows=kb.inline_keyboard
+                if not any(any(btn.callback_data=='bank' for btn in row) for row in rows):
+                    rows.insert(5,[type(rows[0][0])(text='🏦 Банк',callback_data='bank')])
+            except Exception: pass
+            return kb
+        main_wrap._hold_bank_brand=True
+        a.main_k=main_wrap
     for fn in ('home_text','top_text','help_main_text','profile_text'):
         old=getattr(a,fn,None)
         if not callable(old) or getattr(old,'_hold_brand',False): continue
@@ -113,16 +212,27 @@ def patch_branding(a):
             def w(*args,**kwargs):
                 text=oldfn(*args,**kwargs)
                 if not isinstance(text,str): return text
-                text=text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame').replace('Goldcoin','hCoin').replace('goldcoin','hCoin').replace('Gold','HPOINT') if name=='top_text' else text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame')
+                text=text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame')
+                if name=='top_text':
+                    text=text.replace('МИРОВОЙ ТОП ПО GOLDCOIN','МИРОВОЙ ТОП ПО HCOIN')
+                    text=text.replace('Goldcoin','hCoin').replace('goldcoin','hCoin')
                 return text
             w._hold_brand=True; return w
         setattr(a,fn,make(old,fn))
 
+
 def inject(a,dispatcher=None,original_include=None):
     init_db(a)
     if not hasattr(a,'r'): return
-    # Register dedicated handlers first. This avoids relying on fragile handler wrapping/order.
-    a.r.message.register(bank_message_handler,F.text)
-    a.r.message.register(promo_message_handler,F.text)
-    a.r.message.register(bank_command_handler,lambda m: bool((m.text or '').strip().lower().split('@',1)[0]=='/bank'))
     patch_branding(a)
+    # Callback handlers must be explicitly registered; the old version only registered messages.
+    a.r.callback_query.register(subscription_callback_guard, F.data.startswith('subscription:'))
+    a.r.callback_query.register(bank_callback, F.data.startswith('bank:') | (F.data=='bank'))
+    a.r.message.register(subscription_message_guard,F.text)
+    a.r.message.register(bank_message_handler,F.text)
+    a.r.message.register(bank_command_handler,Command('bank'))
+    if getattr(a.r.message,'handlers',None):
+        # Put subscription gate first; bank handlers then handle the actual flow.
+        h=a.r.message.handlers.pop(); a.r.message.handlers.insert(0,h)
+        h=a.r.callback_query.handlers.pop(); a.r.callback_query.handlers.insert(0,h)
+    print('[EXT] Holdgame bank + visible menu + subscription gate loaded.',flush=True)
