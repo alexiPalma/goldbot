@@ -59,7 +59,7 @@ async def subscription_message_guard(m):
 
 async def subscription_callback_guard(c):
     a=app()
-    if a is None: raise SkipHandler()
+    if a is None: return
     if c.data=='subscription:check':
         if await is_subscribed(a,c.from_user.id):
             await c.answer('✅ Подписка подтверждена!',show_alert=True)
@@ -108,10 +108,30 @@ async def bank_state_input(m,a):
     except Exception as e:
         a.db.c.rollback(); a.state.pop(uid,None); await m.answer(f'❌ <b>Операция не выполнена.</b>\n\nПричина: <code>{html.escape(str(e))}</code>',parse_mode='HTML'); return True
 
+async def promo_command_handler(m):
+    a=app(); uid=m.from_user.id; text=(m.text or '').strip()
+    if not await is_subscribed(a,uid):
+        await m.answer(sub_text(),reply_markup=sub_keyboard(),parse_mode='HTML'); return
+    parts=text.split(maxsplit=1)
+    if len(parts)==2:
+        ok,msg=a.db.use_promo(uid,parts[1].strip()); a.state.pop(uid,None)
+        await m.answer((f'🎉 <b>Промокод активирован!</b>\n`{SEP}`\n\n{msg}\n\n{a.bal(uid)}') if ok else '❌ '+msg,parse_mode='HTML'); return
+    a.state[uid]={'promo':True}
+    await m.answer(f'🎟 <b>АКТИВАЦИЯ ПРОМОКОДА</b>\n`{SEP}`\n\nВведите промокод сообщением ниже.',parse_mode='HTML',reply_markup=a.one_back('home'))
+
+async def promo_state_input(m,a):
+    uid=m.from_user.id; s=a.state.get(uid,{})
+    if not s.get('promo'): return False
+    code=(m.text or '').strip(); ok,msg=a.db.use_promo(uid,code); a.state.pop(uid,None)
+    await m.answer((f'🎉 <b>Промокод активирован!</b>\n`{SEP}`\n\n{msg}\n\n{a.bal(uid)}') if ok else '❌ '+msg,parse_mode='HTML'); return True
+
 async def bank_message_handler(m):
     a=app(); uid=m.from_user.id; txt=(m.text or '').strip(); low=txt.lower()
     if not txt or txt.startswith('/'): raise SkipHandler()
     if (s:=a.state.get(uid)) and s.get('bank')=='amount': return await bank_state_input(m,a)
+    if (s:=a.state.get(uid)) and s.get('promo'): return await promo_state_input(m,a)
+    if low in ('промо','промокод'):
+        a.state[uid]={'promo':True}; await m.answer(f'🎟 <b>АКТИВАЦИЯ ПРОМОКОДА</b>\n`{SEP}`\n\nВведите промокод сообщением ниже.',parse_mode='HTML',reply_markup=a.one_back('home')); return
     if low=='банк':
         a.state.pop(uid,None); ensure_bank_user(a,uid); await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
     raise SkipHandler()
@@ -145,9 +165,9 @@ def inject(a,dispatcher=None,original_include=None):
     init_db(a)
     if not hasattr(a,'r'): return
     patch_branding(a)
-    # aiogram 3 does not support index= in register(); insert handlers into the router lists instead.
     a.r.callback_query.register(bank_callback,F.data.startswith('bank:') | (F.data=='bank'))
     a.r.message.register(bank_command_handler,Command('bank'))
+    a.r.message.register(promo_command_handler,Command('promo'))
     a.r.message.register(bank_message_handler,F.text)
     a.r.callback_query.register(subscription_callback_guard,F.data.startswith('subscription:'))
     a.r.message.register(subscription_message_guard,F.text)
@@ -155,13 +175,8 @@ def inject(a,dispatcher=None,original_include=None):
         for observer in (a.r.callback_query,a.r.message):
             if getattr(observer,'handlers',None):
                 handlers=observer.handlers
-                if observer is a.r.callback_query:
-                    bank=[h for h in handlers if h.callback in (bank_callback,subscription_callback_guard)]
-                    rest=[h for h in handlers if h.callback not in (bank_callback,subscription_callback_guard)]
-                    observer.handlers=bank+rest
-                else:
-                    bank=[h for h in handlers if h.callback in (bank_command_handler,bank_message_handler,subscription_message_guard)]
-                    rest=[h for h in handlers if h.callback not in (bank_command_handler,bank_message_handler,subscription_message_guard)]
-                    observer.handlers=bank+rest
+                if observer is a.r.callback_query: priority=[h for h in handlers if h.callback in (bank_callback,subscription_callback_guard)]
+                else: priority=[h for h in handlers if h.callback in (bank_command_handler,promo_command_handler,bank_message_handler,subscription_message_guard)]
+                rest=[h for h in handlers if h not in priority]; observer.handlers=priority+rest
     except Exception as e: print('[BANK ORDER WARNING]',repr(e),flush=True)
-    print('[EXT] Holdgame bank: command + menu + callbacks installed with priority.',flush=True)
+    print('[EXT] Holdgame bank + promo keywords installed with priority.',flush=True)
