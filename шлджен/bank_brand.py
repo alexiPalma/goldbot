@@ -1,6 +1,8 @@
 import sys, html, re
 from decimal import Decimal, InvalidOperation
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.filters import Command
+from aiogram.types import Message
 
 SEP='·····················'
 
@@ -11,10 +13,14 @@ def cur_name(a, cur): return a.currency_primary() if cur == 'Goldcoin' else a.cu
 def init_db(a):
     if not hasattr(a,'db') and hasattr(a,'DB'): a.db=a.DB
     a.db.c.execute('''CREATE TABLE IF NOT EXISTS bank_balances(uid INTEGER PRIMARY KEY,goldcoin TEXT NOT NULL DEFAULT '0',gold TEXT NOT NULL DEFAULT '0')''')
+    # Public branding/settings. Internal DB column names remain goldcoin/gold for compatibility.
     a.db.set_setting('project_name','Holdgame')
+    a.db.set_setting('primary_name','hCoin')
+    a.db.set_setting('premium_name','HPOINT')
+    a.db.set_setting('rate','45000')
     for key in ('donate','rules'):
         text=a.db.text(key)
-        if text: a.db.set_text(key,text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame'))
+        if text: a.db.set_text(key,text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame'))
     a.db.c.commit()
 
 def ensure_bank_user(a,uid):
@@ -31,7 +37,7 @@ def bank_menu():
     b=InlineKeyboardBuilder(); b.button(text='📥 Положить',callback_data='bank:put'); b.button(text='📤 Снять',callback_data='bank:take'); b.button(text='❌ Отмена',callback_data='bank:cancel'); b.adjust(2,1); return b.as_markup()
 
 def currency_menu(action):
-    b=InlineKeyboardBuilder(); b.button(text='💰 Goldcoin',callback_data=f'bank:currency:{action}:Goldcoin'); b.button(text='🪙 gold',callback_data=f'bank:currency:{action}:gold'); b.button(text='❌ Отмена',callback_data='bank:cancel'); b.adjust(2,1); return b.as_markup()
+    b=InlineKeyboardBuilder(); b.button(text='💰 hCoin',callback_data=f'bank:currency:{action}:Goldcoin'); b.button(text='🪙 HPOINT',callback_data=f'bank:currency:{action}:gold'); b.button(text='❌ Отмена',callback_data='bank:cancel'); b.adjust(2,1); return b.as_markup()
 
 def back_bank():
     b=InlineKeyboardBuilder(); b.button(text='❌ Отмена',callback_data='bank:cancel'); return b.as_markup()
@@ -81,8 +87,8 @@ async def fast_transfer(m,a):
     if not re.fullmatch(r'@?[A-Za-z0-9_]{5,32}',username):
         await m.answer('❌ Укажи корректный @username получателя.\n\nПример: <code>перевод @username goldcoin 1000</code>',parse_mode='HTML'); return True
     cur_raw=parts[2].lower()
-    if cur_raw not in ('goldcoin','gold'):
-        await m.answer('❌ Валюта должна быть <b>goldcoin</b> или <b>gold</b>.\n\nПример: <code>перевод @username goldcoin 1000</code>',parse_mode='HTML'); return True
+    if cur_raw not in ('goldcoin','gold','hcoin','hpoint'):
+        await m.answer('❌ Валюта должна быть <b>hCoin</b> или <b>HPOINT</b>.\n\nПример: <code>перевод @username hCoin 1000</code>',parse_mode='HTML'); return True
     try: amount=Decimal(parts[3].replace("'",'').replace(',','.'))
     except (InvalidOperation, ValueError):
         await m.answer('❌ Количество должно быть положительным целым числом.',parse_mode='HTML'); return True
@@ -94,17 +100,29 @@ async def fast_transfer(m,a):
         await m.answer(f'❌ Пользователь не найден. Проверь <b>@{html.escape(username)}</b> и убедись, что пользователь уже запускал бота.',parse_mode='HTML'); return True
     if dst['id']==uid:
         await m.answer('❌ Нельзя переводить валюту самому себе.'); return True
-    cur='Goldcoin' if cur_raw=='goldcoin' else 'gold'
+    cur='Goldcoin' if cur_raw in ('goldcoin','hcoin') else 'gold'
     ok,msg=a.db.transfer(uid,dst['id'],cur,amount)
     if not ok:
         await m.answer('❌ '+html.escape(str(msg)),parse_mode='HTML'); return True
-    a.state.pop(uid,None)
-    label=cur_name(a,cur)
+    a.state.pop(uid,None); label=cur_name(a,cur)
     await m.answer(f'✅ <b>ПЕРЕВОД ВЫПОЛНЕН</b>\n`{SEP}`\n\nПолучатель: {a.uname(dst["id"])}\nСумма: <b>{a.fmt(amount)} {html.escape(label)}</b>\n\n{a.bal(uid)}',parse_mode='HTML')
     try:
         await a.bot.send_message(dst['id'],f'💸 <b>ВАМ ПОСТУПИЛ ПЕРЕВОД</b>\n`{SEP}`\n\nОт: {a.uname(uid)}\nСумма: <b>{a.fmt(amount)} {html.escape(label)}</b>\n\n{a.bal(dst["id"])}',parse_mode='HTML')
     except Exception: pass
     return True
+
+async def _bank_command(m):
+    a=app(); uid=m.from_user.id; ensure_bank_user(a,uid); a.state.pop(uid,None)
+    await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML')
+
+async def _promo_keyword(m):
+    a=app(); uid=m.from_user.id; text=(m.text or '').strip(); parts=text.split(maxsplit=1)
+    if not parts or parts[0].lower() not in ('промо','промокод'): return False
+    if len(parts)==1:
+        a.state[uid]={'promo':True}
+        await m.answer('🎟 <b>ПРОМОКОД</b>\n`'+SEP+'`\n\nВведи промокод:',parse_mode='HTML'); return True
+    code=parts[1].strip(); ok,msg=a.db.use_promo(uid,code); a.state.pop(uid,None)
+    await m.answer((f'🎉 <b>Промокод активирован!</b>\n`{SEP}`\n\n{msg}\n\n{a.bal(uid)}') if ok else '❌ '+msg,parse_mode='HTML'); return True
 
 def patch_main(a):
     old=a.main_k
@@ -134,12 +152,17 @@ def patch_message_router(a):
             original=cb
             async def wrapped(m):
                 txt=(m.text or '').strip(); low=txt.lower(); parts=txt.split()
+                if txt.startswith('/bank') and (txt=='/bank' or txt.startswith('/bank@')):
+                    return await _bank_command(m)
                 if len(parts)==4 and parts[0].lower()=='перевод':
                     if await fast_transfer(m,a): return
+                if low.startswith('промо ') or low.startswith('промокод ') or low in ('промо','промокод'):
+                    if await _promo_keyword(m): return
                 if low=='банк':
                     a.state.pop(m.from_user.id,None); return await m.answer(bank_text(a,m.from_user.id),reply_markup=bank_menu(),parse_mode='HTML')
-                if len(parts)==3 and parts[0].lower() in ('снять','положить') and parts[1].lower() in ('goldcoin','gold'):
-                    a.state[m.from_user.id]={'bank':'amount','bank_action':'take' if parts[0].lower()=='снять' else 'put','currency':'Goldcoin' if parts[1].lower()=='goldcoin' else 'gold'}
+                if len(parts)==3 and parts[0].lower() in ('снять','положить') and parts[1].lower() in ('goldcoin','gold','hcoin','hpoint'):
+                    curraw=parts[1].lower(); cur='Goldcoin' if curraw in ('goldcoin','hcoin') else 'gold'
+                    a.state[m.from_user.id]={'bank':'amount','bank_action':'take' if parts[0].lower()=='снять' else 'put','currency':cur}
                     return await bank_state_input(m,a)
                 if name=='state_input' and a.state.get(m.from_user.id,{}).get('bank')=='amount': return await bank_state_input(m,a)
                 return await original(m)
@@ -151,7 +174,7 @@ def patch_branding(a):
         if not callable(old) or getattr(old,'_hold_brand',False): continue
         def make(oldfn):
             def w(*args,**kwargs):
-                text=oldfn(*args,**kwargs); return text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame') if isinstance(text,str) else text
+                text=oldfn(*args,**kwargs); return text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame') if isinstance(text,str) else text
             w._hold_brand=True; return w
         setattr(a,fn,make(old))
 
