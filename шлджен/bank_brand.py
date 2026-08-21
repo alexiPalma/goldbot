@@ -45,8 +45,7 @@ async def is_subscribed(a,uid):
     try:
         member=await a.bot.get_chat_member(CHANNEL,uid)
         return member.status in ('creator','administrator','member') or (member.status=='restricted' and getattr(member,'is_member',False))
-    except Exception:
-        return False
+    except Exception: return False
 
 async def subscription_message_guard(m):
     a=app()
@@ -85,8 +84,7 @@ async def bank_callback(c):
             await c.answer(); _,_,action,cur=d.split(':',3); a.state[uid]={'bank':'amount','bank_action':action,'currency':cur}; label=cur_name(a,cur)
             await c.message.edit_text(f'🏦 <b>{"ПОЛОЖИТЬ" if action=="put" else "СНЯТЬ"}</b>\n`{SEP}`\n\nСколько {html.escape(label)} вы хотите {"положить в банк" if action=="put" else "снять с банка"}?\n\nВведите целое число:',reply_markup=back_bank(),parse_mode='HTML'); return
     except Exception as e:
-        await c.answer('❌ Ошибка банка. Проверь консоль.',show_alert=True)
-        print('[BANK CALLBACK ERROR]',repr(e),flush=True)
+        await c.answer('❌ Ошибка банка. Проверь консоль.',show_alert=True); print('[BANK CALLBACK ERROR]',repr(e),flush=True)
 
 async def bank_state_input(m,a):
     uid=m.from_user.id; s=a.state.get(uid,{})
@@ -113,9 +111,7 @@ async def bank_state_input(m,a):
 async def bank_message_handler(m):
     a=app(); uid=m.from_user.id; txt=(m.text or '').strip(); low=txt.lower()
     if not txt or txt.startswith('/'): raise SkipHandler()
-    if (s:=a.state.get(uid)) and s.get('bank') in ('amount','currency'):
-        if s.get('bank')=='amount': return await bank_state_input(m,a)
-        raise SkipHandler()
+    if (s:=a.state.get(uid)) and s.get('bank')=='amount': return await bank_state_input(m,a)
     if low=='банк':
         a.state.pop(uid,None); ensure_bank_user(a,uid); await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
     raise SkipHandler()
@@ -129,8 +125,7 @@ def patch_branding(a):
         def main_wrap(uid):
             kb=old_main(uid)
             try:
-                rows=list(kb.inline_keyboard)
-                rows=[list(row) for row in rows]
+                rows=[list(row) for row in kb.inline_keyboard]
                 if not any(any(getattr(btn,'callback_data',None)=='bank' for btn in row) for row in rows):
                     from aiogram.types import InlineKeyboardButton
                     rows.insert(0,[InlineKeyboardButton(text='🏦 Банк',callback_data='bank')])
@@ -138,7 +133,6 @@ def patch_branding(a):
             except Exception as e: print('[BANK MENU ERROR]',repr(e),flush=True)
             return kb
         main_wrap._hold_bank_brand=True; a.main_k=main_wrap
-    # Telegram command menu is set by bot.py after injection, so wrap set_my_commands
     old_set=getattr(a.bot,'set_my_commands',None)
     if callable(old_set) and not getattr(old_set,'_hold_bank_commands',False):
         async def set_commands(commands,*args,**kwargs):
@@ -151,11 +145,23 @@ def inject(a,dispatcher=None,original_include=None):
     init_db(a)
     if not hasattr(a,'r'): return
     patch_branding(a)
-    # Bank handlers must be ahead of the universal keyword/owner handlers.
-    a.r.callback_query.register(bank_callback,F.data.startswith('bank:') | (F.data=='bank'),index=0)
-    a.r.message.register(bank_command_handler,Command('bank'),index=0)
-    a.r.message.register(bank_message_handler,F.text,index=0)
-    # Subscription check comes after the bank handlers so bank UI cannot be swallowed.
-    a.r.callback_query.register(subscription_callback_guard,F.data.startswith('subscription:'),index=0)
-    a.r.message.register(subscription_message_guard,F.text,index=0)
+    # aiogram 3 does not support index= in register(); insert handlers into the router lists instead.
+    a.r.callback_query.register(bank_callback,F.data.startswith('bank:') | (F.data=='bank'))
+    a.r.message.register(bank_command_handler,Command('bank'))
+    a.r.message.register(bank_message_handler,F.text)
+    a.r.callback_query.register(subscription_callback_guard,F.data.startswith('subscription:'))
+    a.r.message.register(subscription_message_guard,F.text)
+    try:
+        for observer in (a.r.callback_query,a.r.message):
+            if getattr(observer,'handlers',None):
+                handlers=observer.handlers
+                if observer is a.r.callback_query:
+                    bank=[h for h in handlers if h.callback in (bank_callback,subscription_callback_guard)]
+                    rest=[h for h in handlers if h.callback not in (bank_callback,subscription_callback_guard)]
+                    observer.handlers=bank+rest
+                else:
+                    bank=[h for h in handlers if h.callback in (bank_command_handler,bank_message_handler,subscription_message_guard)]
+                    rest=[h for h in handlers if h.callback not in (bank_command_handler,bank_message_handler,subscription_message_guard)]
+                    observer.handlers=bank+rest
+    except Exception as e: print('[BANK ORDER WARNING]',repr(e),flush=True)
     print('[EXT] Holdgame bank: command + menu + callbacks installed with priority.',flush=True)
