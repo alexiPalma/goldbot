@@ -6,8 +6,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.dispatcher.event.bases import SkipHandler
 
 SEP='·····················'
-CHANNEL='@holdgamesnews'
-CHANNEL_URL='https://t.me/holdgamesnews'
+CHANNEL='@holdgamenews'
+CHANNEL_URL='https://t.me/holdgamenews'
 
 def app(): return sys.modules.get('__main__') or sys.modules.get('bot')
 def cur_name(a,cur): return a.currency_primary() if cur=='Goldcoin' else a.currency_premium()
@@ -38,7 +38,7 @@ def back_bank():
 def sub_keyboard():
     b=InlineKeyboardBuilder(); b.button(text='📢 Подписаться на канал',url=CHANNEL_URL); b.button(text='✅ Проверить подписку',callback_data='subscription:check'); b.adjust(1,1); return b.as_markup()
 def sub_text():
-    return f'🔐 <b>ДОСТУП К HOLDGAME</b>\n`{SEP}`\n\nЧтобы пользоваться ботом, сначала подпишись на наш канал.\n\n📢 <b>Канал:</b> @holdgamesnews\n\nПосле подписки нажми кнопку <b>«Проверить подписку»</b>.'
+    return f'🔐 <b>ДОСТУП К HOLDGAME</b>\n`{SEP}`\n\nЧтобы пользоваться ботом, сначала подпишись на наш канал.\n\n📢 <b>Канал:</b> @holdgamenews\n\nПосле подписки нажми кнопку <b>«Проверить подписку»</b>.'
 
 async def is_subscribed(a,uid):
     try:
@@ -67,13 +67,13 @@ async def subscription_callback_guard(c):
             except Exception: await c.message.answer(a.home_text(c.from_user.id),reply_markup=a.main_k(c.from_user.id),parse_mode='HTML')
         else: await c.answer('❌ Ты ещё не подписался на канал.',show_alert=True)
         return
-    if not await is_subscribed(a,c.from_user.id): await c.answer('❌ Сначала подпишись на @holdgamesnews.',show_alert=True); return
+    if not await is_subscribed(a,c.from_user.id): await c.answer('❌ Сначала подпишись на @holdgamenews.',show_alert=True); return
     raise SkipHandler()
 
 async def bank_callback(c):
     a=app(); uid=c.from_user.id; d=c.data or ''
     if a is None:return
-    if not await is_subscribed(a,uid): await c.answer('❌ Сначала подпишись на @holdgamesnews.',show_alert=True); return
+    if not await is_subscribed(a,uid): await c.answer('❌ Сначала подпишись на @holdgamenews.',show_alert=True); return
     ensure_bank_user(a,uid)
     if d=='bank': await c.answer(); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
     if d=='bank:cancel': await c.answer(); a.state.pop(uid,None); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
@@ -142,7 +142,6 @@ def inject(a,dispatcher=None,original_include=None):
     init_db(a)
     if not hasattr(a,'r'): return
     patch_branding(a)
-    # Register normal handlers first; put subscription guards at the very front afterwards.
     a.r.callback_query.register(bank_callback,F.data.startswith('bank:') | (F.data=='bank'))
     a.r.message.register(bank_message_handler,F.text)
     a.r.message.register(bank_command_handler,Command('bank'))
