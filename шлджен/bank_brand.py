@@ -1,8 +1,7 @@
 import sys, html, re
 from decimal import Decimal, InvalidOperation
+from aiogram import F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.filters import Command
-from aiogram.types import Message
 
 SEP='·····················'
 
@@ -13,21 +12,17 @@ def cur_name(a, cur): return a.currency_primary() if cur == 'Goldcoin' else a.cu
 def init_db(a):
     if not hasattr(a,'db') and hasattr(a,'DB'): a.db=a.DB
     a.db.c.execute('''CREATE TABLE IF NOT EXISTS bank_balances(uid INTEGER PRIMARY KEY,goldcoin TEXT NOT NULL DEFAULT '0',gold TEXT NOT NULL DEFAULT '0')''')
-    # Public branding/settings. Internal DB column names remain goldcoin/gold for compatibility.
     a.db.set_setting('project_name','Holdgame')
     a.db.set_setting('primary_name','hCoin')
     a.db.set_setting('premium_name','HPOINT')
     a.db.set_setting('rate','45000')
-    for key in ('donate','rules'):
-        text=a.db.text(key)
-        if text: a.db.set_text(key,text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame'))
     a.db.c.commit()
 
 def ensure_bank_user(a,uid):
     a.db.user(uid); a.db.c.execute('INSERT OR IGNORE INTO bank_balances(uid,goldcoin,gold) VALUES(?,?,?)',(uid,'0','0')); a.db.c.commit()
 
 def bank_bal(a,uid):
-    ensure_bank_user(a,uid); r=a.db.c.execute('SELECT goldcoin,gold FROM bank_balances WHERE uid=?',(uid,)).fetchone(); return Decimal(r['goldcoin']),Decimal(r['gold'])
+    ensure_bank_user(a,uid); r=a.db.c.execute('SELECT goldcoin,gold FROM bank_balances WHERE uid=?',(uid,)).fetchone(); return Decimal(str(r['goldcoin'])),Decimal(str(r['gold']))
 
 def bank_text(a,uid):
     p,g=bank_bal(a,uid)
@@ -45,17 +40,17 @@ def back_bank():
 async def bank_callback(c):
     a=app(); uid=c.from_user.id; d=c.data or ''
     if a is None:return False
-    ensure_bank_user(a,uid); await c.answer()
+    ensure_bank_user(a,uid)
     if d=='bank':
-        await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return True
+        await c.answer(); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return True
     if d=='bank:cancel':
-        a.state.pop(uid,None); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return True
+        await c.answer(); a.state.pop(uid,None); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return True
     if d=='bank:put':
-        a.state[uid]={'bank':'currency','bank_action':'put'}; await c.message.edit_text('🏦 <b>ПОЛОЖИТЬ В БАНК</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('put'),parse_mode='HTML'); return True
+        await c.answer(); a.state[uid]={'bank':'currency','bank_action':'put'}; await c.message.edit_text('🏦 <b>ПОЛОЖИТЬ В БАНК</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('put'),parse_mode='HTML'); return True
     if d=='bank:take':
-        a.state[uid]={'bank':'currency','bank_action':'take'}; await c.message.edit_text('🏦 <b>СНЯТЬ С БАНКА</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('take'),parse_mode='HTML'); return True
+        await c.answer(); a.state[uid]={'bank':'currency','bank_action':'take'}; await c.message.edit_text('🏦 <b>СНЯТЬ С БАНКА</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('take'),parse_mode='HTML'); return True
     if d.startswith('bank:currency:'):
-        _,_,action,cur=d.split(':',3); a.state[uid]={'bank':'amount','bank_action':action,'currency':cur}; label=cur_name(a,cur)
+        await c.answer(); _,_,action,cur=d.split(':',3); a.state[uid]={'bank':'amount','bank_action':action,'currency':cur}; label=cur_name(a,cur)
         await c.message.edit_text(f'🏦 <b>{"ПОЛОЖИТЬ" if action=="put" else "СНЯТЬ"}</b>\n`{SEP}`\n\nСколько {html.escape(label)} вы хотите {"положить в банк" if action=="put" else "снять с банка"}?\n\nВведите целое число:',reply_markup=back_bank(),parse_mode='HTML'); return True
     return False
 
@@ -64,121 +59,70 @@ async def bank_state_input(m,a):
     if s.get('bank')!='amount': return False
     text=(m.text or '').strip().replace("'",'').replace(' ','')
     try: amount=Decimal(text)
-    except InvalidOperation: await m.answer('❌ Введите положительное целое число.'); return True
+    except (InvalidOperation,ValueError): await m.answer('❌ Введите положительное целое число.'); return True
     if amount<=0 or amount!=amount.to_integral_value(): await m.answer('❌ Введите положительное целое число.'); return True
     action=s.get('bank_action'); cur=s.get('currency'); col='goldcoin' if cur=='Goldcoin' else 'gold'; label=cur_name(a,cur); ensure_bank_user(a,uid)
-    if action=='put':
-        wallet=a.db.balance(uid)[0 if col=='goldcoin' else 1]
-        if wallet<amount:
-            await m.answer(f'❌ Недостаточно {html.escape(label)}.\n\nБаланс: <b>{a.fmt(wallet)} {html.escape(label)}</b>',parse_mode='HTML'); return True
-        a.db.add(uid,cur,-amount,'bank_deposit'); a.db.c.execute(f'UPDATE bank_balances SET {col}=CAST({col} AS REAL)+? WHERE uid=?',(str(amount),uid)); a.db.c.commit(); a.state.pop(uid,None)
-        await m.answer(f'✅ В банк положено: <b>{a.fmt(amount)} {html.escape(label)}</b>\n\n{bank_text(a,uid)}',reply_markup=bank_menu(),parse_mode='HTML'); return True
-    bank_wallet=bank_bal(a,uid)[0 if col=='goldcoin' else 1]
-    if bank_wallet<amount:
-        await m.answer(f'❌ В банке недостаточно {html.escape(label)}.\n\nВ банке: <b>{a.fmt(bank_wallet)} {html.escape(label)}</b>',parse_mode='HTML'); return True
-    a.db.c.execute(f'UPDATE bank_balances SET {col}=CAST({col} AS REAL)-? WHERE uid=?',(str(amount),uid)); a.db.c.commit(); a.db.add(uid,cur,amount,'bank_withdraw'); a.state.pop(uid,None)
-    await m.answer(f'✅ Из банка снято: <b>{a.fmt(amount)} {html.escape(label)}</b>\n\n{bank_text(a,uid)}',reply_markup=bank_menu(),parse_mode='HTML'); return True
-
-async def fast_transfer(m,a):
-    uid=m.from_user.id
-    parts=(m.text or '').strip().split()
-    if len(parts)!=4 or parts[0].lower()!='перевод': return False
-    username=parts[1].strip()
-    if not re.fullmatch(r'@?[A-Za-z0-9_]{5,32}',username):
-        await m.answer('❌ Укажи корректный @username получателя.\n\nПример: <code>перевод @username goldcoin 1000</code>',parse_mode='HTML'); return True
-    cur_raw=parts[2].lower()
-    if cur_raw not in ('goldcoin','gold','hcoin','hpoint'):
-        await m.answer('❌ Валюта должна быть <b>hCoin</b> или <b>HPOINT</b>.\n\nПример: <code>перевод @username hCoin 1000</code>',parse_mode='HTML'); return True
-    try: amount=Decimal(parts[3].replace("'",'').replace(',','.'))
-    except (InvalidOperation, ValueError):
-        await m.answer('❌ Количество должно быть положительным целым числом.',parse_mode='HTML'); return True
-    if amount<=0 or amount!=amount.to_integral_value():
-        await m.answer('❌ Количество должно быть положительным целым числом.',parse_mode='HTML'); return True
-    username=username.lstrip('@')
-    dst=a.db.c.execute('SELECT * FROM users WHERE lower(username)=lower(?)',(username,)).fetchone()
-    if not dst:
-        await m.answer(f'❌ Пользователь не найден. Проверь <b>@{html.escape(username)}</b> и убедись, что пользователь уже запускал бота.',parse_mode='HTML'); return True
-    if dst['id']==uid:
-        await m.answer('❌ Нельзя переводить валюту самому себе.'); return True
-    cur='Goldcoin' if cur_raw in ('goldcoin','hcoin') else 'gold'
-    ok,msg=a.db.transfer(uid,dst['id'],cur,amount)
-    if not ok:
-        await m.answer('❌ '+html.escape(str(msg)),parse_mode='HTML'); return True
-    a.state.pop(uid,None); label=cur_name(a,cur)
-    await m.answer(f'✅ <b>ПЕРЕВОД ВЫПОЛНЕН</b>\n`{SEP}`\n\nПолучатель: {a.uname(dst["id"])}\nСумма: <b>{a.fmt(amount)} {html.escape(label)}</b>\n\n{a.bal(uid)}',parse_mode='HTML')
     try:
-        await a.bot.send_message(dst['id'],f'💸 <b>ВАМ ПОСТУПИЛ ПЕРЕВОД</b>\n`{SEP}`\n\nОт: {a.uname(uid)}\nСумма: <b>{a.fmt(amount)} {html.escape(label)}</b>\n\n{a.bal(dst["id"])}',parse_mode='HTML')
-    except Exception: pass
-    return True
+        if action=='put':
+            wallet=a.db.balance(uid)[0 if col=='goldcoin' else 1]
+            if wallet<amount:
+                await m.answer(f'❌ <b>Недостаточно {html.escape(label)}</b>.\n\nБаланс: <b>{a.fmt(wallet)} {html.escape(label)}</b>',parse_mode='HTML'); return True
+            a.db.add(uid,cur,-amount,'bank_deposit')
+            a.db.c.execute(f'UPDATE bank_balances SET {col}=CAST({col} AS REAL)+? WHERE uid=?',(str(amount),uid))
+        else:
+            bank_wallet=bank_bal(a,uid)[0 if col=='goldcoin' else 1]
+            if bank_wallet<amount:
+                await m.answer(f'❌ <b>В банке недостаточно {html.escape(label)}</b>.\n\nВ банке: <b>{a.fmt(bank_wallet)} {html.escape(label)}</b>',parse_mode='HTML'); return True
+            a.db.c.execute(f'UPDATE bank_balances SET {col}=CAST({col} AS REAL)-? WHERE uid=?',(str(amount),uid))
+            a.db.add(uid,cur,amount,'bank_withdraw')
+        a.db.c.commit(); a.state.pop(uid,None)
+        action_text='положено в банк' if action=='put' else 'снято с банка'
+        await m.answer(f'✅ <b>Операция выполнена!</b>\n`{SEP}`\n\n{html.escape(label)}: <b>{a.fmt(amount)}</b>\nСумма {action_text}.\n\n{bank_text(a,uid)}',reply_markup=bank_menu(),parse_mode='HTML'); return True
+    except Exception as e:
+        a.db.c.rollback(); a.state.pop(uid,None)
+        await m.answer(f'❌ <b>Операция не выполнена.</b>\n\nПричина: <code>{html.escape(str(e))}</code>',parse_mode='HTML'); return True
 
-async def _bank_command(m):
-    a=app(); uid=m.from_user.id; ensure_bank_user(a,uid); a.state.pop(uid,None)
-    await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML')
+async def bank_message_handler(m):
+    a=app(); uid=m.from_user.id; txt=(m.text or '').strip(); low=txt.lower(); parts=txt.split()
+    if not txt or txt.startswith('/'): return False
+    if s:=a.state.get(uid):
+        if s.get('bank')=='amount': return await bank_state_input(m,a)
+    if low=='банк':
+        a.state.pop(uid,None); ensure_bank_user(a,uid); await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return True
+    if len(parts)==3 and parts[0].lower() in ('снять','положить') and parts[1].lower() in ('goldcoin','gold','hcoin','hpoint'):
+        curraw=parts[1].lower(); cur='Goldcoin' if curraw in ('goldcoin','hcoin') else 'gold'
+        a.state[uid]={'bank':'amount','bank_action':'take' if parts[0].lower()=='снять' else 'put','currency':cur}
+        return await bank_state_input(m,a)
+    return False
 
-async def _promo_keyword(m):
-    a=app(); uid=m.from_user.id; text=(m.text or '').strip(); parts=text.split(maxsplit=1)
+async def bank_command_handler(m):
+    a=app(); uid=m.from_user.id; ensure_bank_user(a,uid); a.state.pop(uid,None); await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML')
+
+async def promo_message_handler(m):
+    a=app(); uid=m.from_user.id; txt=(m.text or '').strip(); parts=txt.split(maxsplit=1)
     if not parts or parts[0].lower() not in ('промо','промокод'): return False
     if len(parts)==1:
-        a.state[uid]={'promo':True}
-        await m.answer('🎟 <b>ПРОМОКОД</b>\n`'+SEP+'`\n\nВведи промокод:',parse_mode='HTML'); return True
-    code=parts[1].strip(); ok,msg=a.db.use_promo(uid,code); a.state.pop(uid,None)
-    await m.answer((f'🎉 <b>Промокод активирован!</b>\n`{SEP}`\n\n{msg}\n\n{a.bal(uid)}') if ok else '❌ '+msg,parse_mode='HTML'); return True
-
-def patch_main(a):
-    old=a.main_k
-    if getattr(old,'_hold_bank',False): return
-    def wrapped(uid):
-        markup=old(uid)
-        if any(btn.callback_data=='bank' for row in markup.inline_keyboard for btn in row): return markup
-        b=InlineKeyboardBuilder()
-        for row in markup.inline_keyboard: b.row(*row)
-        b.button(text='🏦 Банк',callback_data='bank'); b.adjust(2,2,2,2,2,2,2,2,1); return b.as_markup()
-    wrapped._hold_bank=True; a.main_k=wrapped
-
-def patch_callback_router(a):
-    for h in getattr(a.r.callback_query,'handlers',[]):
-        cb=getattr(h,'callback',None)
-        if getattr(cb,'__name__','')=='cb' and not getattr(cb,'_hold_bank_wrapped',False):
-            original=cb
-            async def wrapped(c):
-                if (c.data or '').startswith('bank') and await bank_callback(c): return
-                return await original(c)
-            wrapped._hold_bank_wrapped=True; h.callback=wrapped; break
-
-def patch_message_router(a):
-    for h in getattr(a.r.message,'handlers',[]):
-        cb=getattr(h,'callback',None); name=getattr(cb,'__name__','')
-        if name in ('group_keywords','state_input','_hold_keyword_handler') and not getattr(cb,'_hold_bank_wrapped',False):
-            original=cb
-            async def wrapped(m):
-                txt=(m.text or '').strip(); low=txt.lower(); parts=txt.split()
-                if txt.startswith('/bank') and (txt=='/bank' or txt.startswith('/bank@')):
-                    return await _bank_command(m)
-                if len(parts)==4 and parts[0].lower()=='перевод':
-                    if await fast_transfer(m,a): return
-                if low.startswith('промо ') or low.startswith('промокод ') or low in ('промо','промокод'):
-                    if await _promo_keyword(m): return
-                if low=='банк':
-                    a.state.pop(m.from_user.id,None); return await m.answer(bank_text(a,m.from_user.id),reply_markup=bank_menu(),parse_mode='HTML')
-                if len(parts)==3 and parts[0].lower() in ('снять','положить') and parts[1].lower() in ('goldcoin','gold','hcoin','hpoint'):
-                    curraw=parts[1].lower(); cur='Goldcoin' if curraw in ('goldcoin','hcoin') else 'gold'
-                    a.state[m.from_user.id]={'bank':'amount','bank_action':'take' if parts[0].lower()=='снять' else 'put','currency':cur}
-                    return await bank_state_input(m,a)
-                if name=='state_input' and a.state.get(m.from_user.id,{}).get('bank')=='amount': return await bank_state_input(m,a)
-                return await original(m)
-            wrapped._hold_bank_wrapped=True; h.callback=wrapped; break
+        a.state[uid]={'promo':True}; await m.answer('🎟 <b>ПРОМОКОД</b>\n`'+SEP+'`\n\nВведи промокод:',parse_mode='HTML'); return True
+    ok,msg=a.db.use_promo(uid,parts[1].strip()); a.state.pop(uid,None); await m.answer((f'🎉 <b>Промокод активирован!</b>\n`{SEP}`\n\n{msg}\n\n{a.bal(uid)}') if ok else '❌ '+msg,parse_mode='HTML'); return True
 
 def patch_branding(a):
-    for fn in ('home_text','top_text','help_main_text'):
+    for fn in ('home_text','top_text','help_main_text','profile_text'):
         old=getattr(a,fn,None)
         if not callable(old) or getattr(old,'_hold_brand',False): continue
-        def make(oldfn):
+        def make(oldfn,name):
             def w(*args,**kwargs):
-                text=oldfn(*args,**kwargs); return text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame') if isinstance(text,str) else text
+                text=oldfn(*args,**kwargs)
+                if not isinstance(text,str): return text
+                text=text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame').replace('Goldcoin','hCoin').replace('goldcoin','hCoin').replace('Gold','HPOINT') if name=='top_text' else text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame')
+                return text
             w._hold_brand=True; return w
-        setattr(a,fn,make(old))
+        setattr(a,fn,make(old,fn))
 
 def inject(a,dispatcher=None,original_include=None):
     init_db(a)
     if not hasattr(a,'r'): return
-    patch_main(a); patch_callback_router(a); patch_message_router(a); patch_branding(a)
+    # Register dedicated handlers first. This avoids relying on fragile handler wrapping/order.
+    a.r.message.register(bank_message_handler,F.text)
+    a.r.message.register(promo_message_handler,F.text)
+    a.r.message.register(bank_command_handler,lambda m: bool((m.text or '').strip().lower().split('@',1)[0]=='/bank'))
+    patch_branding(a)
