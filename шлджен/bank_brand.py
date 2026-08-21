@@ -1,9 +1,10 @@
-import sys, html, re
+import sys, html, re, asyncio
 from decimal import Decimal, InvalidOperation
 from aiogram import F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.dispatcher.event.bases import SkipHandler
+from aiogram.types import BotCommand
 
 SEP='·····················'
 CHANNEL='@holdgamenews'
@@ -75,13 +76,17 @@ async def bank_callback(c):
     if a is None:return
     if not await is_subscribed(a,uid): await c.answer('❌ Сначала подпишись на @holdgamenews.',show_alert=True); return
     ensure_bank_user(a,uid)
-    if d=='bank': await c.answer(); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
-    if d=='bank:cancel': await c.answer(); a.state.pop(uid,None); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
-    if d=='bank:put': await c.answer(); a.state[uid]={'bank':'currency','bank_action':'put'}; await c.message.edit_text('🏦 <b>ПОЛОЖИТЬ В БАНК</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('put'),parse_mode='HTML'); return
-    if d=='bank:take': await c.answer(); a.state[uid]={'bank':'currency','bank_action':'take'}; await c.message.edit_text('🏦 <b>СНЯТЬ С БАНКА</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('take'),parse_mode='HTML'); return
-    if d.startswith('bank:currency:'):
-        await c.answer(); _,_,action,cur=d.split(':',3); a.state[uid]={'bank':'amount','bank_action':action,'currency':cur}; label=cur_name(a,cur)
-        await c.message.edit_text(f'🏦 <b>{"ПОЛОЖИТЬ" if action=="put" else "СНЯТЬ"}</b>\n`{SEP}`\n\nСколько {html.escape(label)} вы хотите {"положить в банк" if action=="put" else "снять с банка"}?\n\nВведите целое число:',reply_markup=back_bank(),parse_mode='HTML'); return
+    try:
+        if d=='bank': await c.answer(); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
+        if d=='bank:cancel': await c.answer(); a.state.pop(uid,None); await c.message.edit_text(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
+        if d=='bank:put': await c.answer(); a.state[uid]={'bank':'currency','bank_action':'put'}; await c.message.edit_text('🏦 <b>ПОЛОЖИТЬ В БАНК</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('put'),parse_mode='HTML'); return
+        if d=='bank:take': await c.answer(); a.state[uid]={'bank':'currency','bank_action':'take'}; await c.message.edit_text('🏦 <b>СНЯТЬ С БАНКА</b>\n`'+SEP+'`\n\nКакая валюта?',reply_markup=currency_menu('take'),parse_mode='HTML'); return
+        if d.startswith('bank:currency:'):
+            await c.answer(); _,_,action,cur=d.split(':',3); a.state[uid]={'bank':'amount','bank_action':action,'currency':cur}; label=cur_name(a,cur)
+            await c.message.edit_text(f'🏦 <b>{"ПОЛОЖИТЬ" if action=="put" else "СНЯТЬ"}</b>\n`{SEP}`\n\nСколько {html.escape(label)} вы хотите {"положить в банк" if action=="put" else "снять с банка"}?\n\nВведите целое число:',reply_markup=back_bank(),parse_mode='HTML'); return
+    except Exception as e:
+        await c.answer('❌ Ошибка банка. Проверь консоль.',show_alert=True)
+        print('[BANK CALLBACK ERROR]',repr(e),flush=True)
 
 async def bank_state_input(m,a):
     uid=m.from_user.id; s=a.state.get(uid,{})
@@ -107,10 +112,14 @@ async def bank_state_input(m,a):
 
 async def bank_message_handler(m):
     a=app(); uid=m.from_user.id; txt=(m.text or '').strip(); low=txt.lower()
-    if not txt or txt.startswith('/'): return False
-    if (s:=a.state.get(uid)) and s.get('bank')=='amount': return await bank_state_input(m,a)
-    if low=='банк': a.state.pop(uid,None); ensure_bank_user(a,uid); await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return True
-    return False
+    if not txt or txt.startswith('/'): raise SkipHandler()
+    if (s:=a.state.get(uid)) and s.get('bank') in ('amount','currency'):
+        if s.get('bank')=='amount': return await bank_state_input(m,a)
+        raise SkipHandler()
+    if low=='банк':
+        a.state.pop(uid,None); ensure_bank_user(a,uid); await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML'); return
+    raise SkipHandler()
+
 async def bank_command_handler(m):
     a=app(); uid=m.from_user.id; ensure_bank_user(a,uid); a.state.pop(uid,None); await m.answer(bank_text(a,uid),reply_markup=bank_menu(),parse_mode='HTML')
 
@@ -120,35 +129,33 @@ def patch_branding(a):
         def main_wrap(uid):
             kb=old_main(uid)
             try:
-                rows=kb.inline_keyboard
-                if not any(any(getattr(btn,'callback_data',None)=='bank' for btn in row) for row in rows): rows.append([type(rows[0][0])(text='🏦 Банк',callback_data='bank')])
-            except Exception: pass
+                rows=list(kb.inline_keyboard)
+                rows=[list(row) for row in rows]
+                if not any(any(getattr(btn,'callback_data',None)=='bank' for btn in row) for row in rows):
+                    from aiogram.types import InlineKeyboardButton
+                    rows.insert(0,[InlineKeyboardButton(text='🏦 Банк',callback_data='bank')])
+                kb.inline_keyboard=rows
+            except Exception as e: print('[BANK MENU ERROR]',repr(e),flush=True)
             return kb
         main_wrap._hold_bank_brand=True; a.main_k=main_wrap
-    for fn in ('home_text','top_text','help_main_text','profile_text'):
-        old=getattr(a,fn,None)
-        if not callable(old) or getattr(old,'_hold_brand',False): continue
-        def make(oldfn,name):
-            def w(*args,**kwargs):
-                text=oldfn(*args,**kwargs)
-                if not isinstance(text,str): return text
-                text=text.replace('GOLDGAME','Holdgame').replace('GoldGame','Holdgame').replace('Goldgame','Holdgame')
-                if name=='top_text': text=text.replace('МИРОВОЙ ТОП ПО GOLDCOIN','МИРОВОЙ ТОП ПО HCOIN').replace('Goldcoin','hCoin').replace('goldcoin','hCoin')
-                return text
-            w._hold_brand=True; return w
-        setattr(a,fn,make(old,fn))
+    # Telegram command menu is set by bot.py after injection, so wrap set_my_commands
+    old_set=getattr(a.bot,'set_my_commands',None)
+    if callable(old_set) and not getattr(old_set,'_hold_bank_commands',False):
+        async def set_commands(commands,*args,**kwargs):
+            commands=list(commands or [])
+            if not any(getattr(x,'command',None)=='bank' for x in commands): commands.append(BotCommand(command='bank',description='🏦 Банк'))
+            return await old_set(commands,*args,**kwargs)
+        set_commands._hold_bank_commands=True; a.bot.set_my_commands=set_commands
 
 def inject(a,dispatcher=None,original_include=None):
     init_db(a)
     if not hasattr(a,'r'): return
     patch_branding(a)
-    a.r.callback_query.register(bank_callback,F.data.startswith('bank:') | (F.data=='bank'))
-    a.r.message.register(bank_message_handler,F.text)
-    a.r.message.register(bank_command_handler,Command('bank'))
-    a.r.callback_query.register(subscription_callback_guard,F.data.startswith('subscription:'))
-    a.r.message.register(subscription_message_guard,F.text)
-    if getattr(a.r.message,'handlers',None):
-        h=a.r.message.handlers.pop(); a.r.message.handlers.insert(0,h)
-    if getattr(a.r.callback_query,'handlers',None):
-        h=a.r.callback_query.handlers.pop(); a.r.callback_query.handlers.insert(0,h)
-    print('[EXT] Holdgame bank + visible menu + subscription gate loaded.',flush=True)
+    # Bank handlers must be ahead of the universal keyword/owner handlers.
+    a.r.callback_query.register(bank_callback,F.data.startswith('bank:') | (F.data=='bank'),index=0)
+    a.r.message.register(bank_command_handler,Command('bank'),index=0)
+    a.r.message.register(bank_message_handler,F.text,index=0)
+    # Subscription check comes after the bank handlers so bank UI cannot be swallowed.
+    a.r.callback_query.register(subscription_callback_guard,F.data.startswith('subscription:'),index=0)
+    a.r.message.register(subscription_message_guard,F.text,index=0)
+    print('[EXT] Holdgame bank: command + menu + callbacks installed with priority.',flush=True)
