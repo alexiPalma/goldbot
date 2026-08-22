@@ -149,7 +149,8 @@ class DB:
     def user_rank(self,uid):
         r=self.c.execute("SELECT COUNT(*) n FROM users WHERE CAST(goldcoin AS REAL) > (SELECT CAST(goldcoin AS REAL) FROM users WHERE id=?)",(uid,)).fetchone(); return int(r['n'])+1
     def leaderboard(self,limit=10): return self.c.execute('SELECT * FROM users ORDER BY CAST(goldcoin AS REAL) DESC LIMIT ?',(limit,)).fetchall()
-    def promos(self): return self.c.execute('SELECT * FROM promo ORDER BY code').fetchall()
+    def promos(self):
+        return self.c.execute("SELECT code, CASE WHEN lower(currency)='goldcoin' THEN ? WHEN lower(currency)='gold' THEN ? ELSE currency END AS currency, amount, max_uses, uses, active FROM promo ORDER BY code",(self.setting('primary_name') or 'hCoin',self.setting('premium_name') or 'HPOINT')).fetchall()
     def create_promo(self,code,currency,amount,max_uses):
         cur=self.normalize_currency(currency)
         if not cur:
