@@ -165,30 +165,29 @@ def patch_currency_display(a):
     """Replace legacy currency labels only in rendered admin/top text.
     Database columns and internal currency keys remain goldcoin/gold.
     """
-    # Keep the actual settings authoritative for every future balance render.
     a.db.set_setting('primary_name','hCoin')
     a.db.set_setting('premium_name','HPOINT')
     a.db.set_setting('rate','45000')
     a.db.c.commit()
 
+    def brand_text(text):
+        if not isinstance(text,str): return text
+        # IMPORTANT: display-only replacement. Internal DB keys stay unchanged.
+        text=re.sub(r'(?i)goldcoin', a.currency_primary(), text)
+        text=re.sub(r'(?i)gold', a.currency_premium(), text)
+        return text
+
     old_top=getattr(a,'top_text',None)
     if callable(old_top) and not getattr(old_top,'_hold_currency_brand',False):
         def top_wrap():
-            text=old_top()
-            return text.replace('GOLDCOIN', a.currency_primary()).replace('Goldcoin', a.currency_primary()).replace('gold', a.currency_premium())
+            return brand_text(old_top())
         top_wrap._hold_currency_brand=True
         a.top_text=top_wrap
 
-    # admin_page builds several legacy examples directly into its text.
-    # Patch only its rendered text, without changing internal DB currency keys.
     old_show=getattr(a,'show',None)
     if callable(old_show) and not getattr(old_show,'_hold_currency_display',False):
         async def branded_show(target,text,markup=None):
-            if isinstance(text,str):
-                text=text.replace('Goldcoin', a.currency_primary()).replace('GOLDCOIN', a.currency_primary())
-                # Replace standalone display label, while preserving words like goldcoin internally.
-                text=re.sub(r'(?<![A-Za-z])gold(?![A-Za-z])', a.currency_premium(), text, flags=re.IGNORECASE)
-            return await old_show(target,text,markup)
+            return await old_show(target,brand_text(text),markup)
         branded_show._hold_currency_display=True
         a.show=branded_show
 
