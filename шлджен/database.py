@@ -43,7 +43,6 @@ class DB:
           result TEXT,payout TEXT,win INTEGER DEFAULT 0,created_at INTEGER
         );
         ''')
-        # Migrations for old DBs.
         cols = {r['name'] for r in self.c.execute('PRAGMA table_info(games_history)')}
         if 'win' not in cols:
             self.c.execute("ALTER TABLE games_history ADD COLUMN win INTEGER DEFAULT 0")
@@ -79,6 +78,20 @@ class DB:
         self.c.execute('INSERT INTO settings_text(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v',(k,v)); self.c.commit()
     def rate(self): return Decimal(self.setting('rate') or '1000000')
 
+    def normalize_currency(self,currency):
+        cur=str(currency or '').strip().lower()
+        if cur in ('goldcoin','hcoin'):
+            return 'goldcoin'
+        if cur in ('gold','hpoint','hpoints'):
+            return 'gold'
+        return None
+
+    def currency_label(self,currency):
+        cur=self.normalize_currency(currency)
+        if cur=='goldcoin': return self.setting('primary_name') or 'hCoin'
+        if cur=='gold': return self.setting('premium_name') or 'HPOINT'
+        return str(currency or '')
+
     def user(self,uid,username=None,first_name=None):
         r=self.c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone()
         if not r:
@@ -98,26 +111,26 @@ class DB:
     def add(self,uid,currency,amount,kind='manual',other_id=None):
         try: amount=Decimal(str(amount))
         except InvalidOperation: return False
-        if currency.lower()=='goldcoin': col='goldcoin'
-        elif currency.lower()=='gold': col='gold'
-        else: return False
+        cur=self.normalize_currency(currency)
+        if not cur: return False
+        col='goldcoin' if cur=='goldcoin' else 'gold'
         with self.c:
             r=self.c.execute(f'SELECT {col} FROM users WHERE id=?',(uid,)).fetchone()
             if not r: self.user(uid); r=self.c.execute(f'SELECT {col} FROM users WHERE id=?',(uid,)).fetchone()
-            cur=Decimal(r[col]); new=cur+amount
+            cur_amount=Decimal(r[col]); new=cur_amount+amount
             if new < 0: return False
             self.c.execute(f'UPDATE users SET {col}=? WHERE id=?',(str(new),uid))
-            self.c.execute('INSERT INTO transactions(user_id,other_id,kind,currency,amount,note,created_at) VALUES(?,?,?,?,?,?,?)',(uid,other_id,kind,currency,str(amount),'',int(time.time())))
+            self.c.execute('INSERT INTO transactions(user_id,other_id,kind,currency,amount,note,created_at) VALUES(?,?,?,?,?,?,?)',(uid,other_id,kind,cur,str(amount),'',int(time.time())))
         return True
     def transfer(self,src,dst,currency,amount):
         try: amount=Decimal(str(amount))
         except InvalidOperation: return False,'Некорректная сумма.'
         if amount<=0:return False,'Сумма должна быть больше нуля.'
         if src==dst:return False,'Нельзя переводить самому себе.'
-        cur=currency.lower()
-        if cur not in ('goldcoin','gold'): return False,'Неизвестная валюта.'
+        cur=self.normalize_currency(currency)
+        if not cur: return False,'Неизвестная валюта.'
         col='goldcoin' if cur=='goldcoin' else 'gold'
-        label='Goldcoin' if cur=='goldcoin' else 'gold'
+        label=self.currency_label(cur)
         self.user(dst)
         with self.c:
             s=self.c.execute(f'SELECT {col} FROM users WHERE id=?',(src,)).fetchone(); d=self.c.execute(f'SELECT {col} FROM users WHERE id=?',(dst,)).fetchone()
@@ -125,8 +138,8 @@ class DB:
             self.c.execute(f'UPDATE users SET {col}=? WHERE id=?',(str(Decimal(s[col])-amount),src))
             self.c.execute(f'UPDATE users SET {col}=? WHERE id=?',(str(Decimal(d[col])+amount),dst))
             now=int(time.time())
-            self.c.execute('INSERT INTO transactions(user_id,other_id,kind,currency,amount,note,created_at) VALUES(?,?,?,?,?,?,?)',(src,dst,'transfer_out',label,str(-amount),'',now))
-            self.c.execute('INSERT INTO transactions(user_id,other_id,kind,currency,amount,note,created_at) VALUES(?,?,?,?,?,?,?)',(dst,src,'transfer_in',label,str(amount),'',now))
+            self.c.execute('INSERT INTO transactions(user_id,other_id,kind,currency,amount,note,created_at) VALUES(?,?,?,?,?,?,?)',(src,dst,'transfer_out',cur,str(-amount),'',now))
+            self.c.execute('INSERT INTO transactions(user_id,other_id,kind,currency,amount,note,created_at) VALUES(?,?,?,?,?,?,?)',(dst,src,'transfer_in',cur,str(amount),'',now))
         return True,'OK'
     def record_game(self,uid,game,bet,result,payout,win):
         bet=Decimal(str(bet)); payout=Decimal(str(payout))
@@ -138,7 +151,10 @@ class DB:
     def leaderboard(self,limit=10): return self.c.execute('SELECT * FROM users ORDER BY CAST(goldcoin AS REAL) DESC LIMIT ?',(limit,)).fetchall()
     def promos(self): return self.c.execute('SELECT * FROM promo ORDER BY code').fetchall()
     def create_promo(self,code,currency,amount,max_uses):
-        self.c.execute('INSERT OR REPLACE INTO promo(code,currency,amount,max_uses,uses,active) VALUES(?,?,?,?,0,1)',(code.upper(),currency, str(amount),max_uses)); self.c.commit()
+        cur=self.normalize_currency(currency)
+        if not cur:
+            raise ValueError('Неизвестная валюта. Используй hCoin или HPOINT.')
+        self.c.execute('INSERT OR REPLACE INTO promo(code,currency,amount,max_uses,uses,active) VALUES(?,?,?,?,0,1)',(code.upper(),cur, str(amount),max_uses)); self.c.commit()
     def delete_promo(self,code): self.c.execute('UPDATE promo SET active=0 WHERE code=?',(code.upper(),)); self.c.commit()
     def use_promo(self,uid,code):
         code=code.strip().upper(); p=self.c.execute('SELECT * FROM promo WHERE code=? AND active=1',(code,)).fetchone()
@@ -146,10 +162,12 @@ class DB:
         if self.c.execute('SELECT 1 FROM promo_users WHERE code=? AND user_id=?',(code,uid)).fetchone():return False,'Ты уже использовал этот промокод.'
         if p['max_uses'] and p['uses']>=p['max_uses']:return False,'Лимит активаций промокода исчерпан.'
         self.user(uid)
-        if not self.add(uid,p['currency'],Decimal(p['amount']),'promo') : return False,'Не удалось начислить награду.'
+        cur=self.normalize_currency(p['currency'])
+        if not cur:return False,'У промокода указана неизвестная валюта.'
+        if not self.add(uid,cur,Decimal(p['amount']),'promo') : return False,'Не удалось начислить награду.'
         with self.c:
             self.c.execute('INSERT INTO promo_users(code,user_id) VALUES(?,?)',(code,uid)); self.c.execute('UPDATE promo SET uses=uses+1 WHERE code=?',(code,))
-        return True,f'+{p["amount"]} {p["currency"]}'
+        return True,f'+{p["amount"]} {self.currency_label(cur)}'
     def admins(self): return [r['id'] for r in self.c.execute('SELECT id FROM admins ORDER BY id').fetchall()]
     def add_admin(self,uid): self.c.execute('INSERT OR IGNORE INTO admins(id) VALUES(?)',(uid,)); self.c.commit()
     def del_admin(self,uid): self.c.execute('DELETE FROM admins WHERE id=?',(uid,)); self.c.commit()
