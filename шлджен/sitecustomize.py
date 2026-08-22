@@ -26,6 +26,13 @@ try:
 except Exception:
     pass
 
+_old_home_text = home_text
+
+def home_text(uid):
+    # The old source contains GOLDGAME hard-coded in the welcome screen.
+    # Keep all internal identifiers intact, but display the current project name.
+    return _old_home_text(uid).replace('GOLDGAME', 'Holdgame').replace('Goldgame', 'Holdgame').replace('goldgame', 'Holdgame')
+
 _old_top_text = top_text
 
 def top_text():
@@ -51,6 +58,10 @@ async def admin_page(c, sec):
         txt = f"💸 <b>ВЫДАТЬ / СПИСАТЬ</b>\n`{SEP}`\n\nВыдать: <code>/give @username {currency_primary()} 1000</code>\nСписать: <code>/take @username {currency_primary()} 1000</code>\n\nДоступны {currency_primary()} и {currency_premium()}."
         return await show(c, txt, admin_k())
     return await _old_admin_page(c, sec)
+
+_old_lottery_text = lottery_text
+def lottery_text():
+    return _old_lottery_text().replace('Goldcoin', currency_primary()).replace('goldcoin', currency_primary()).replace('Gold', currency_premium()).replace('gold', currency_premium())
 '''
         if marker in source and 'dynamic currency compatibility patch' not in source:
             source = source.replace(marker, patch + '\n' + marker, 1)
