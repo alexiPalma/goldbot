@@ -161,10 +161,42 @@ def patch_branding(a):
             return await old_set(commands,*args,**kwargs)
         set_commands._hold_bank_commands=True; a.bot.set_my_commands=set_commands
 
+def patch_currency_display(a):
+    """Replace legacy currency labels only in rendered admin/top text.
+    Database columns and internal currency keys remain goldcoin/gold.
+    """
+    # Keep the actual settings authoritative for every future balance render.
+    a.db.set_setting('primary_name','hCoin')
+    a.db.set_setting('premium_name','HPOINT')
+    a.db.set_setting('rate','45000')
+    a.db.c.commit()
+
+    old_top=getattr(a,'top_text',None)
+    if callable(old_top) and not getattr(old_top,'_hold_currency_brand',False):
+        def top_wrap():
+            text=old_top()
+            return text.replace('GOLDCOIN', a.currency_primary()).replace('Goldcoin', a.currency_primary()).replace('gold', a.currency_premium())
+        top_wrap._hold_currency_brand=True
+        a.top_text=top_wrap
+
+    # admin_page builds several legacy examples directly into its text.
+    # Patch only its rendered text, without changing internal DB currency keys.
+    old_show=getattr(a,'show',None)
+    if callable(old_show) and not getattr(old_show,'_hold_currency_display',False):
+        async def branded_show(target,text,markup=None):
+            if isinstance(text,str):
+                text=text.replace('Goldcoin', a.currency_primary()).replace('GOLDCOIN', a.currency_primary())
+                # Replace standalone display label, while preserving words like goldcoin internally.
+                text=re.sub(r'(?<![A-Za-z])gold(?![A-Za-z])', a.currency_premium(), text, flags=re.IGNORECASE)
+            return await old_show(target,text,markup)
+        branded_show._hold_currency_display=True
+        a.show=branded_show
+
 def inject(a,dispatcher=None,original_include=None):
     init_db(a)
     if not hasattr(a,'r'): return
     patch_branding(a)
+    patch_currency_display(a)
     a.r.callback_query.register(bank_callback,F.data.startswith('bank:') | (F.data=='bank'))
     a.r.message.register(bank_command_handler,Command('bank'))
     a.r.message.register(promo_command_handler,Command('promo'))
@@ -179,4 +211,4 @@ def inject(a,dispatcher=None,original_include=None):
                 else: priority=[h for h in handlers if h.callback in (bank_command_handler,promo_command_handler,bank_message_handler,subscription_message_guard)]
                 rest=[h for h in handlers if h not in priority]; observer.handlers=priority+rest
     except Exception as e: print('[BANK ORDER WARNING]',repr(e),flush=True)
-    print('[EXT] Holdgame bank + promo keywords installed with priority.',flush=True)
+    print('[EXT] Holdgame bank + promo keywords + currency branding installed with priority.',flush=True)
