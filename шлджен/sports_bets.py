@@ -41,8 +41,7 @@ def bet_k(uid,game):
 
 async def show_start(message,game):
     title='🎯 <b>ДАРТС</b>' if game=='darts' else '🎳 <b>БОУЛИНГ</b>'
-    text=f"{title}\n`{sep()}`\n\nВыбери ставку:"
-    return await a().show(message,text,bet_k(message.from_user.id,game))
+    return await a().show(message,f"{title}\n`{sep()}`\n\nВыбери ставку:",bet_k(message.from_user.id,game))
 
 async def show_choice(message,game,amount):
     title='🎯 <b>ДАРТС</b>' if game=='darts' else '🎳 <b>БОУЛИНГ</b>'
@@ -91,7 +90,6 @@ async def cb(c):
 
 async def msg_handler(message):
     text=(message.text or '').strip(); parts=text.lower().split(); uid=message.from_user.id
-    # Custom stake after the button.
     if uid in _PENDING and text and not text.startswith('/'):
         game=_PENDING.pop(uid)
         try: amount=Decimal(text.replace("'",'').replace(',',''))
@@ -106,18 +104,20 @@ async def msg_handler(message):
         except Exception:return await message.answer('❌ Укажи ставку числом, например: <code>дартс 100</code>',parse_mode='HTML')
         if amount<=0 or amount!=amount.to_integral_value():return await message.answer('❌ Ставка должна быть положительным целым числом.')
         return await show_choice(message,game,amount)
-    return
+
+def sport_message_filter(message):
+    text=(message.text or '').strip().lower().split()
+    return message.from_user.id in _PENDING or bool(text and text[0] in ALIASES)
 
 def patch_router():
     aa=a()
     if not aa or not hasattr(aa,'r'): return
     r=aa.r; key=id(r)
     if key in _INSTALLED:return
-    # Put our handlers at the front so the legacy game handler cannot consume them first.
     r.callback_query.register(cb,F.data.startswith('sportstart:')|F.data.startswith('sportcustom:')|F.data.startswith('sportbet:')|F.data.startswith('sportback:'))
     try: r.callback_query.handlers.insert(0,r.callback_query.handlers.pop())
     except Exception: pass
-    r.message.register(msg_handler)
+    r.message.register(msg_handler,sport_message_filter)
     try: r.message.handlers.insert(0,r.message.handlers.pop())
     except Exception: pass
     _INSTALLED.add(key)
