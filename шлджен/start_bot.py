@@ -1,130 +1,58 @@
-import os
-import time
-import traceback
-import sys
-import re
-
-BASE=os.path.dirname(os.path.abspath(__file__))
-BOT=os.path.join(BASE,'bot.py')
-KEYWORDS=r'''
-from aiogram.dispatcher.event.bases import SkipHandler as _HoldSkipHandler
-import re as _hold_re
-_hold_callback_owner={}
-_hold_patched=False
-
-async def _hold_owner_guard(c:CallbackQuery):
-    msg=c.message
-    if msg is None:return await c.answer()
-    key=(msg.chat.id,msg.message_id); owner=_hold_callback_owner.get(key)
-    if owner is None and getattr(msg.chat,'type',None)=='private': owner=msg.chat.id
-    if owner is None and getattr(msg.chat,'type',None) in ('group','supergroup'): return await c.answer()
-    if owner is not None and owner!=c.from_user.id:return await c.answer()
-    raise _HoldSkipHandler()
-
-async def _hold_message_answer(self,*args,**kwargs):
-    result=await _hold_original_answer(self,*args,**kwargs)
-    try:
-        owner=self.from_user.id
-        if getattr(self.from_user,'is_bot',False): owner=_hold_callback_owner.get((self.chat.id,self.message_id),owner)
-        if getattr(result,'reply_markup',None) is not None:_hold_callback_owner[(result.chat.id,result.message_id)]=owner
-    except Exception:pass
-    return result
-
-def _hold_install_owner_patch():
-    global _hold_patched,_hold_original_answer
-    if _hold_patched:return
-    _hold_patched=True; _hold_original_answer=Message.answer; Message.answer=_hold_message_answer
-    r.callback_query.register(_hold_owner_guard)
-    if getattr(r.callback_query,'handlers',None):
-        _h=r.callback_query.handlers.pop(); r.callback_query.handlers.insert(0,_h)
-
-def _hold_norm(text):return ' '.join((text or '').strip().lower().split())
-
-def _hold_state_blocks_unrelated(uid,low):
-    s=state.get(uid)
-    if not s:return False
-    if low in ('отмена','отменить','cancel'):
-        state.pop(uid,None);return False
-    globals_={'б','баланс','профиль','проф','реф','реферал','рефералы','топ','заработать','заработок','обменник','обмен','помощь','хелп','help','правила','игры','игра','кейсы','кейс','бонус','ежедневный','дейли','лотерея','перевод','донат','банк'}
-    if low in globals_ or low.startswith('/'):
-        state.pop(uid,None);return False
-    if s.get('transfer')=='username':return not bool(_hold_re.fullmatch(r'@?[A-Za-z0-9_]{5,32}',low))
-    if s.get('transfer')=='currency':return low not in ('gold','goldcoin')
-    if s.get('transfer')=='amount':return not bool(_hold_re.fullmatch(r'[0-9][0-9\'\s]*',low))
-    return False
-
-async def _hold_sports_game(m,game,bet):
-    emoji={'basket':'🏀','football':'⚽','darts':'🎯','bowling':'🎳'}[game]; labels={'basket':'Баскетбол','football':'Футбол','darts':'Дартс','bowling':'Боулинг'}; uid=m.from_user.id
-    if not games.cost(uid,bet,game+'_bet'):return await m.answer(f'❌ <b>Недостаточно {html.escape(currency_primary())}</b>\n\n{bal(uid)}',parse_mode='HTML')
-    msg=await bot.send_dice(m.chat.id,emoji=emoji); await asyncio.sleep(2); value=msg.dice.value
-    win=value in ({'basket':{4,5},'football':{3,4,5},'darts':{6},'bowling':{6}}[game]); payout=Decimal(bet)*Decimal(db.setting('sport_multiplier') or '2') if win else Decimal(0); games.finish(uid,game,bet,'hit' if win else 'miss',payout,win)
-    text=(f"{emoji} <b>{labels[game]}</b>\n`{SEP}`\n\n🎯 <b>Попал!</b>\n💰 Выигрыш: <b>+{fmt(payout)} {html.escape(currency_primary())}</b>\n\n{bal(uid)}" if win else f"{emoji} <b>{labels[game]}</b>\n`{SEP}`\n\n❌ <b>Мимо!</b>\n💸 Ставка: <b>−{fmt(bet)} {html.escape(currency_primary())}</b>\n\n{bal(uid)}")
-    return await m.answer(text,parse_mode='HTML',reply_markup=result_k(f'game:{game}'))
-
-async def _hold_spin_game(m,bet):
-    uid=m.from_user.id
-    if not games.cost(uid,bet,'spin_bet'):return await m.answer(f'❌ <b>Недостаточно {html.escape(currency_primary())}</b>\n\n{bal(uid)}',parse_mode='HTML')
-    msg=await bot.send_dice(m.chat.id,emoji='🎰'); await asyncio.sleep(2.2); v=int(msg.dice.value)
-    if v==64:reels=['7️⃣','7️⃣','7️⃣']
-    else:
-        mapping=[1,2,3,0];symbols=['🍒','🍋','🔔','7️⃣'];digits=[mapping[(v-1)&3],mapping[((v-1)>>2)&3],mapping[((v-1)>>4)&3]];reels=[symbols[d] for d in digits]
-    win=len(set(reels))==1;payout=bet*Decimal(db.setting('spin_multiplier') or '5') if win else Decimal(0);games.finish(uid,'spin',bet,'|'.join(reels),payout,win)
-    text=f"🎰 <b>СПИН</b>\n`{SEP}`\n\n{' '.join(reels)}\n\n"+(f"🎉 <b>ТРИ ОДИНАКОВЫХ!</b>\n💰 Выигрыш: <b>+{fmt(payout)} {html.escape(currency_primary())}</b>" if win else f"😔 <b>Комбинация не собрана.</b>\n💸 Ставка: <b>−{fmt(bet)} {html.escape(currency_primary())}</b>")+f"\n\n{bal(uid)}"
-    return await m.answer(text,parse_mode='HTML',reply_markup=result_k('game:spin'))
-
-async def _hold_keyword_handler(m:Message):
-    text=(m.text or '').strip();low=_hold_norm(text);p=low.split();uid=m.from_user.id;db.user(uid,m.from_user.username,m.from_user.first_name)
-    if not low or low.startswith('/'):raise _HoldSkipHandler()
-    if _hold_state_blocks_unrelated(uid,low):return
-    if low in ('отмена','отменить','cancel'):return await m.answer('❌ Действие отменено.')
-    if low=='банк':
-        import bank_brand as _bank
-        return await m.answer(_bank.bank_text(sys.modules['__main__'],uid),reply_markup=_bank.bank_menu(),parse_mode='HTML')
-    if len(p)==3 and p[0] in ('снять','положить') and p[1] in ('goldcoin','gold'):
-        try:amount=Decimal(p[2].replace("'",'').replace(',','.'))
-        except Exception:return await m.answer('❌ Количество должно быть положительным целым числом.')
-        if amount<=0 or amount!=amount.to_integral_value():return await m.answer('❌ Количество должно быть положительным целым числом.')
-        import bank_brand as _bank
-        state[uid]={'bank':'amount','bank_action':'take' if p[0]=='снять' else 'put','currency':'Goldcoin' if p[1]=='goldcoin' else 'gold'}
-        return await _bank.bank_state_input(m,sys.modules['__main__'])
-    simple={
-        'б':lambda:m.answer(bal(uid),parse_mode='HTML'),'баланс':lambda:m.answer(bal(uid),parse_mode='HTML'),'профиль':lambda:m.answer(profile_text(uid),parse_mode='HTML',reply_markup=one_back('home')),'проф':lambda:m.answer(profile_text(uid),parse_mode='HTML',reply_markup=one_back('home')),
-        'реф':lambda:m.answer(ref_text(uid),parse_mode='HTML',reply_markup=one_back('home')),'реферал':lambda:m.answer(ref_text(uid),parse_mode='HTML',reply_markup=one_back('home')),'рефералы':lambda:m.answer(ref_text(uid),parse_mode='HTML',reply_markup=one_back('home')),'топ':lambda:m.answer(top_text(),parse_mode='HTML',reply_markup=one_back('home')),
-        'заработать':lambda:earn_open(m),'заработок':lambda:earn_open(m),'обменник':lambda:exchange_open(m),'обмен':lambda:exchange_open(m),'помощь':lambda:help_cmd(m),'хелп':lambda:help_cmd(m),'help':lambda:help_cmd(m),'правила':lambda:rules(m),'игры':lambda:m.answer(play_text(),reply_markup=play_k(),parse_mode='HTML'),'игра':lambda:m.answer(play_text(),reply_markup=play_k(),parse_mode='HTML'),'кейсы':lambda:cases(m),'кейс':lambda:cases(m),'бонус':lambda:bonus(m),'ежедневный':lambda:daily(m),'дейли':lambda:daily(m),'лотерея':lambda:lottery(m),'перевод':lambda:transfer(m),'донат':lambda:donate(m)}
-    if low in simple:state.pop(uid,None);return await simple[low]()
-    aliases={'баскет':'basket','баскетбол':'basket','бск':'basket','фтб':'football','футбол':'football','дартс':'darts','дрс':'darts','кубик':'dice','куб':'dice','боулинг':'bowling','бол':'bowling','сп':'spin','спин':'spin','мины':'mines','мина':'mines','21':'21','блэкджек':'21','башня':'tower','монета':'coin','мон':'coin','кости':'dice2'}
-    if len(p)>=2 and p[0] in aliases:
-        try:amount=Decimal(p[1].replace("'",'').replace(',','.'))
-        except Exception:return await m.answer('❌ Укажи корректную ставку, например: <b>баскет 500</b>',parse_mode='HTML')
-        if amount<=0 or amount!=amount.to_integral_value():return await m.answer('❌ Ставка должна быть положительным целым числом.')
-        game=aliases[p[0]]
-        if db.balance(uid)[0]<amount:return await m.answer(f'❌ <b>Недостаточно {html.escape(currency_primary())}</b>\n\nБаланс: <b>{fmt(amount)} {html.escape(currency_primary())}</b>',parse_mode='HTML')
-        if game in ('basket','football','darts','bowling'):return await _hold_sports_game(m,game,amount)
-        if game=='spin':return await _hold_spin_game(m,amount)
-        labels={'mines':'💣 Мины','tower':'🗼 Башня','21':'🃏 21','coin':'🪙 Монета','dice':'🎲 Кубик','dice2':'🎲 Кости'}
-        return await m.answer(f"{labels[game]}\n`{SEP}`\n\nВыбери вариант игры:",reply_markup=bet_k(game),parse_mode='HTML')
-    raise _HoldSkipHandler()
-
-r.message.register(_hold_keyword_handler,F.text)
-if getattr(r.message,'handlers',None):_rec=r.message.handlers.pop();r.message.handlers.insert(0,_rec)
-_hold_install_owner_patch()
-import bank_brand as _hold_bank
-_hold_bank.inject(sys.modules['__main__'],dp,r.include_router if hasattr(r,'include_router') else None)
-print('[EXT] Holdgame bank + universal keywords + per-user callbacks loaded.',flush=True)
+import os,time,traceback,sys
+BASE=os.path.dirname(os.path.abspath(__file__)); BOT=os.path.join(BASE,'bot.py')
+PATCH=r'''
+from aiogram.dispatcher.event.bases import SkipHandler
+try:
+ db.set_setting('primary_name','hCoin');db.set_setting('premium_name','HPOINT');db.set_setting('rate','45000');db.c.commit()
+except:pass
+try:
+ old=home_text
+ def home_text(uid):return old(uid).replace('GOLDGAME','Holdgame').replace('Goldgame','Holdgame')
+ def top_text():
+  rows=db.leaderboard(10);z=[f'<b>🏆 МИРОВОЙ ТОП ПО {html.escape(currency_primary())}</b>','`'+SEP+'`']
+  z += [f'{i}. {display_user(u)} | <code>{fmt(u["goldcoin"])} {html.escape(currency_primary())}</code>' for i,u in enumerate(rows,1)];return '\n'.join(z)
+except:pass
+# Correct dice conditions: only 2..5.
+def dice_condition_target_k(amt):
+ from aiogram.utils.keyboard import InlineKeyboardBuilder
+ b=InlineKeyboardBuilder()
+ for n in range(2,6):
+  for op,word in (('lt','Меньше'),('eq','Равно'),('gt','Больше')):b.button(text=f'{word} {n}',callback_data=f'dicecond:{op}:{n}:{amt}')
+ b.button(text='◀️ Назад',callback_data='play');b.adjust(3,3,3,3,1);return b.as_markup()
+# Use the already complete v2 handler; the old start_bot keyword layer is removed.
+import bot_extensions_v2 as vx
+vx.install(db)
+# Bank/promo handlers first, then state machine, then universal games/duels.
+import bank_brand as bk
+bk.inject(sys.modules['__main__'],dp,None)
+async def bridge(m):
+ s=state.get(m.from_user.id,{})
+ if s.get('admin') or s.get('transfer') or s.get('exchange') or s.get('exchange_confirm') is not None:return await state_input(m)
+ raise SkipHandler()
+r.message.register(bridge,F.text & ~F.text.startswith('/'))
+try:
+ def mk(h):
+  n=getattr(h.callback,'__name__','')
+  return 0 if n in ('bank_message_handler','bank_command_handler','promo_command_handler') else (1 if h.callback is bridge else (2 if h.callback is vx._message else 3))
+ r.message.handlers.sort(key=mk)
+ def ck(h):
+  n=getattr(h.callback,'__name__','');return 0 if n=='bank_callback' else (1 if h.callback is vx._callback else 2)
+ r.callback_query.handlers.sort(key=ck)
+except Exception:pass
+# Every sender is registered even when using a slash command.
+async def register_user(m):db.user(m.from_user.id,m.from_user.username,m.from_user.first_name);raise SkipHandler()
+r.message.register(register_user,F.text)
+try:r.message.handlers.insert(0,r.message.handlers.pop())
+except:pass
+print('[HOTFIX] Holdgame final routing loaded: keywords, custom bets, duel, promo, transfer, exchange, bank, dice 2..5.',flush=True)
 '''
-
-def _run_bot_with_keywords():
-    with open(BOT,'r',encoding='utf-8') as f:source=f.read()
-    marker="if __name__=='__main__':asyncio.run(main())"
-    if marker not in source:marker="if __name__ == '__main__':asyncio.run(main())"
-    if marker not in source:raise RuntimeError('Cannot find bot.py polling marker')
-    source=source.replace(marker,KEYWORDS+'\n'+marker,1)
-    exec(compile(source,BOT,'exec'),globals(),globals())
-
+def run():
+ s=open(BOT,encoding='utf-8').read();mark="if __name__=='__main__':asyncio.run(main())"
+ if mark not in s:raise RuntimeError('polling marker missing')
+ exec(compile(s.replace(mark,PATCH+'\n'+mark,1),BOT,'exec'),globals(),globals())
 while True:
-    try:
-        print('[BOT] Starting bot...',flush=True);_run_bot_with_keywords();print('[BOT] Process ended. Restarting in 3 seconds...',flush=True)
-    except KeyboardInterrupt:print('[BOT] Stopped by user.',flush=True);break
-    except SystemExit as e:print(f'[BOT] SystemExit: {e}. Restarting in 3 seconds...',flush=True)
-    except Exception:print('[BOT] Unexpected crash. Full traceback:',flush=True);traceback.print_exc();print('[BOT] Restarting in 5 seconds...',flush=True);time.sleep(5)
-    time.sleep(3)
+ try:print('[BOT] Starting bot...',flush=True);run()
+ except KeyboardInterrupt:print('[BOT] Stopped by user.',flush=True);break
+ except SystemExit as e:print('[BOT] SystemExit:',e,flush=True)
+ except Exception:print('[BOT] Unexpected crash:',flush=True);traceback.print_exc()
+ time.sleep(5)
