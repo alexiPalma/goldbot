@@ -123,6 +123,7 @@ class DB:
             self.c.execute('INSERT INTO transactions(user_id,other_id,kind,currency,amount,note,created_at) VALUES(?,?,?,?,?,?,?)',(uid,other_id,kind,cur,str(amount),'',int(time.time())))
         return True
     def transfer(self,src,dst,currency,amount):
+        self.user(src)
         try: amount=Decimal(str(amount))
         except InvalidOperation: return False,'Некорректная сумма.'
         if amount<=0:return False,'Сумма должна быть больше нуля.'
@@ -172,8 +173,11 @@ class DB:
     def admins(self): return [r['id'] for r in self.c.execute('SELECT id FROM admins ORDER BY id').fetchall()]
     def add_admin(self,uid): self.c.execute('INSERT OR IGNORE INTO admins(id) VALUES(?)',(uid,)); self.c.commit()
     def del_admin(self,uid): self.c.execute('DELETE FROM admins WHERE id=?',(uid,)); self.c.commit()
-    def cd_ready(self,uid,key): return self.cd_left(uid,key)<=0
+    def cd_ready(self,uid,key):
+        self.user(uid)
+        return self.cd_left(uid,key)<=0
     def cd_left(self,uid,key):
+        self.user(uid)
         r=self.c.execute('SELECT until_ts FROM cooldowns WHERE user_id=? AND key=?',(uid,key)).fetchone(); return max(0,(r['until_ts']-int(time.time())) if r else 0)
     def set_cd(self,uid,key,seconds): self.c.execute('INSERT INTO cooldowns(user_id,key,until_ts) VALUES(?,?,?) ON CONFLICT(user_id,key) DO UPDATE SET until_ts=excluded.until_ts',(uid,key,int(time.time())+int(seconds))); self.c.commit()
     def group_ids(self): return [r['id'] for r in self.c.execute('SELECT id FROM groups WHERE active=1').fetchall()]
