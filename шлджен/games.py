@@ -5,7 +5,7 @@ class Games:
     def __init__(self,db):
         self.db=db; self.mines={}; self.towers={}; self.blackjack={}
         try:
-            from bot_extensions import install
+            from bot_extensions_v2 import install
             install(db)
         except Exception:
             pass
