@@ -1,14 +1,162 @@
+import asyncio
 import random
+import sys
 from decimal import Decimal
 
 class Games:
     def __init__(self,db):
         self.db=db; self.mines={}; self.towers={}; self.blackjack={}
+        self._install_runtime_overrides()
         try:
             from bot_extensions_v2 import install
             install(db)
         except Exception:
             pass
+
+    def _install_runtime_overrides(self):
+        """Keep the legacy start_bot.py keyword layer compatible with the current game flow."""
+        a=sys.modules.get('__main__')
+        if not a or not hasattr(a,'r') or getattr(a,'_hold_runtime_overrides',False):
+            return
+        a._hold_runtime_overrides=True
+        router=a.r
+
+        # start_bot.py registers its legacy keyword handler at the very end and
+        # moves it to the front. Wrap that registration so quick bets and custom
+        # stake input are handled before the legacy handler can open only a menu.
+        original_message_register=router.message.register
+        def message_register(callback,*filters,**kwargs):
+            if getattr(callback,'__name__','')=='_hold_keyword_handler':
+                async def wrapped(message):
+                    text=(message.text or '').strip()
+                    uid=message.from_user.id
+                    custom=getattr(a,'_hold_custom_bets',{})
+                    if uid in custom and text and not text.startswith('/'):
+                        try: amount=Decimal(text.replace("'",'').replace(',','.'))
+                        except Exception:
+                            custom.pop(uid,None)
+                            return await message.answer('❌ Ставка должна быть положительным целым числом.')
+                        if amount<=0 or amount!=amount.to_integral_value():
+                            custom.pop(uid,None)
+                            return await message.answer('❌ Ставка должна быть положительным целым числом.')
+                        game=custom.pop(uid)
+                        try:
+                            from bot_extensions_v2 import _start_bet
+                            return await _start_bet(uid,game,amount,message.chat.id,message)
+                        except Exception:
+                            import logging; logging.exception('custom stake')
+                            return await message.answer('❌ Не удалось запустить игру. Попробуй ещё раз.')
+
+                    parts=text.lower().split()
+                    aliases={
+                        'баскет':'basket','баскетбол':'basket','бск':'basket',
+                        'фтб':'football','футбол':'football',
+                        'дартс':'darts','дрс':'darts','дрт':'darts',
+                        'кубик':'dice','куб':'dice',
+                        'боулинг':'bowling','бол':'bowling','бл':'bowling',
+                        'сп':'spin','спин':'spin',
+                        'мины':'mines','мина':'mines',
+                        '21':'21','очко':'21',
+                        'башня':'tower','баш':'tower',
+                        'монета':'coin','мон':'coin',
+                        'кости':'dice2','кст':'dice2','кост':'dice2',
+                    }
+                    if len(parts)==2 and parts[0] in aliases:
+                        try: amount=Decimal(parts[1].replace("'",'').replace(',','.'))
+                        except Exception:
+                            return await message.answer('❌ Укажи корректную ставку, например: <b>кости 30000</b>',parse_mode='HTML')
+                        if amount<=0 or amount!=amount.to_integral_value():
+                            return await message.answer('❌ Ставка должна быть положительным целым числом.')
+                        try:
+                            from bot_extensions_v2 import _start_bet
+                            return await _start_bet(uid,aliases[parts[0]],amount,message.chat.id,message)
+                        except Exception:
+                            import logging; logging.exception('quick game')
+                            return await message.answer('❌ Не удалось запустить игру. Попробуй ещё раз.')
+                    return await callback(message)
+                wrapped.__name__='_hold_keyword_handler'
+                return original_message_register(wrapped,*filters,**kwargs)
+            return original_message_register(callback,*filters,**kwargs)
+        router.message.register=message_register
+
+        # The old bot.py callback layer contains the old 1..6 dice-condition
+        # keyboard and has no custom-stake button. Intercept its game/bet callbacks
+        # and route them through the current universal game flow.
+        original_callback_register=router.callback_query.register
+        def callback_register(callback,*filters,**kwargs):
+            if getattr(callback,'__name__','')=='cb':
+                async def wrapped(c):
+                    d=c.data or ''
+                    uid=c.from_user.id
+                    labels={
+                        'basket':'🏀 Баскетбол','football':'⚽ Футбол','darts':'🎯 Дартс',
+                        'dice':'🎲 Кубик','bowling':'🎳 Боулинг','spin':'🎰 Спин',
+                        'mines':'💣 Мины','21':'🃏 21 очко','tower':'🗼 Башня',
+                        'coin':'🪙 Монета','dice2':'🎲 Кости'
+                    }
+                    def bet_keyboard(game):
+                        from aiogram.utils.keyboard import InlineKeyboardBuilder
+                        b=InlineKeyboardBuilder()
+                        for n in (10,100,1000,10000,100000):
+                            b.button(text=f"{n:,}".replace(',','\''),callback_data=f'holdbet:{game}:{n}')
+                        b.button(text='✍️ Своя ставка',callback_data=f'holdcustom:{game}')
+                        b.button(text='◀️ Назад',callback_data='play')
+                        b.adjust(2,2,1,1,1)
+                        return b.as_markup()
+                    def dice2_keyboard(amount):
+                        from aiogram.utils.keyboard import InlineKeyboardBuilder
+                        b=InlineKeyboardBuilder()
+                        for n in range(2,6):
+                            b.button(text=f'Меньше {n}',callback_data=f'holdcond:lt:{n}:{amount}')
+                            b.button(text=f'Равно {n}',callback_data=f'holdcond:eq:{n}:{amount}')
+                            b.button(text=f'Больше {n}',callback_data=f'holdcond:gt:{n}:{amount}')
+                        b.button(text='◀️ Назад',callback_data='play'); b.adjust(3,3,3,3,1)
+                        return b.as_markup()
+
+                    if d.startswith('game:'):
+                        game=d.split(':',1)[1]
+                        if game in labels:
+                            await c.answer()
+                            return await a.show(c,f"{labels[game]}\n`{a.SEP}`\n\nВыбери ставку:",bet_keyboard(game))
+                    if d.startswith('bet:'):
+                        try:
+                            _,game,amount=d.split(':',2)
+                            if game=='dice2':
+                                await c.answer()
+                                return await a.show(c,f"🎲 <b>КОСТИ</b>\n`{a.SEP}`\n\nВыбери условие и число <b>от 2 до 5</b>:\n\nСтавка: <b>{amount} {a.currency_primary()}</b>",dice2_keyboard(amount))
+                        except Exception:
+                            pass
+                    if d.startswith('holdbet:'):
+                        _,game,amount=d.split(':',2)
+                        await c.answer()
+                        try:
+                            from bot_extensions_v2 import _start_bet
+                            return await _start_bet(uid,game,Decimal(amount),c.message.chat.id,c.message)
+                        except Exception:
+                            import logging; logging.exception('holdbet')
+                            return await c.answer('❌ Не удалось запустить игру.',show_alert=True)
+                    if d.startswith('holdcustom:'):
+                        game=d.split(':',1)[1]
+                        await c.answer()
+                        custom=getattr(a,'_hold_custom_bets',None)
+                        if custom is None: custom={}; setattr(a,'_hold_custom_bets',custom)
+                        custom[uid]=game
+                        return await a.show(c,f"✍️ <b>СВОЯ СТАВКА</b>\n`{a.SEP}`\n\nВведи сумму ставки для <b>{labels.get(game,'игры')}</b> одним сообщением.\n\nНапример: <code>30000</code>",a.one_back('play'))
+                    if d.startswith('holdcond:'):
+                        _,op,target,amount=d.split(':',3)
+                        await c.answer()
+                        try:
+                            from bot_extensions_v2 import _dicecond
+                            return await _dicecond(c,uid,op,int(target),Decimal(amount))
+                        except Exception:
+                            import logging; logging.exception('holdcond')
+                            return await c.answer('❌ Не удалось запустить кости.',show_alert=True)
+                    return await callback(c)
+                wrapped.__name__='cb'
+                return original_callback_register(wrapped,*filters,**kwargs)
+            return original_callback_register(callback,*filters,**kwargs)
+        router.callback_query.register=callback_register
+
     def cost(self,uid,bet,kind):
         bet=Decimal(str(bet)); return bet>0 and self.db.add(uid,'Goldcoin',-bet,kind)
     def finish(self,uid,game,bet,result,payout,win):
