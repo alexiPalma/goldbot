@@ -25,6 +25,41 @@ vx.install(db)
 import bank_brand as bk
 bk.inject(sys.modules['__main__'],dp,None)
 
+# ---------- 21 hotfix ----------
+# If a player already has an unfinished 21 game, pressing the 21 button
+# must reopen that game instead of returning the generic "Не удалось начать игру".
+try:
+ _old_blackjack_start=Games.blackjack_start
+ def _blackjack_start_fixed(self,uid,bet):
+  if uid in self.blackjack:
+   return self.blackjack[uid]
+  return _old_blackjack_start(self,uid,bet)
+ Games.blackjack_start=_blackjack_start_fixed
+except Exception:
+ pass
+
+# ---------- per-channel subscription reward ----------
+# /earnadd @channel 5000 [Название]
+async def earnadd_fixed(m):
+    if not is_admin(m.from_user.id):
+        raise SkipHandler()
+    p=m.text.split()
+    if len(p)<3:
+        return await m.answer('/earnadd @channel 5000 [Название]')
+    username=p[1].lstrip('@')
+    try:
+        reward=Decimal(p[2])
+    except Exception:
+        return await m.answer('❌ Сумма награды должна быть положительным числом.')
+    if reward<=0:
+        return await m.answer('❌ Сумма награды должна быть больше нуля.')
+    title=' '.join(p[3:]).strip() or ('@'+username)
+    db.c.execute('INSERT INTO earn_channels(title,username,active,reward) VALUES(?,?,1,?)',(title,username,str(reward)))
+    db.c.commit()
+    await m.answer(f'✅ Канал @{html.escape(username)} добавлен.\n💰 Награда за подписку: <b>{fmt(reward)} {html.escape(currency_primary())}</b>',parse_mode='HTML')
+
+r.message.register(earnadd_fixed,Command('earnadd'))
+
 async def quick_keywords(m):
     text=(m.text or '').strip(); low=' '.join(text.lower().split()); parts=low.split(); uid=m.from_user.id
     if not low or low.startswith('/'):
@@ -96,7 +131,7 @@ r.message.register(bridge,F.text & ~F.text.startswith('/'))
 try:
  def mk(h):
   n=getattr(h.callback,'__name__','')
-  return 0 if n in ('bank_message_handler','bank_command_handler','promo_command_handler') else (1 if h.callback is quick_keywords else (2 if h.callback is bridge else (3 if h.callback is vx._message else 4)))
+  return 0 if n in ('bank_message_handler','bank_command_handler','promo_command_handler','earnadd_fixed') else (1 if h.callback is quick_keywords else (2 if h.callback is bridge else (3 if h.callback is vx._message else 4)))
  r.message.handlers.sort(key=mk)
  def ck(h):
   n=getattr(h.callback,'__name__','');return 0 if n=='bank_callback' else (1 if h.callback is vx._callback else 2)
@@ -106,7 +141,7 @@ async def register_user(m):db.user(m.from_user.id,m.from_user.username,m.from_us
 r.message.register(register_user,F.text)
 try:r.message.handlers.insert(0,r.message.handlers.pop())
 except:pass
-print('[HOTFIX] Holdgame routing restored: quick keywords + games + duel + transfer + promo + bank.',flush=True)
+print('[HOTFIX] Holdgame routing restored: quick keywords + games + duel + transfer + promo + bank + per-channel earn reward + 21.',flush=True)
 '''
 def run():
  s=open(BOT,encoding='utf-8').read();mark="if __name__=='__main__':asyncio.run(main())"
