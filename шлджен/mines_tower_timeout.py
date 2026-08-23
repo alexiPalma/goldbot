@@ -1,12 +1,12 @@
-import asyncio, sys, time
+import sys, time, threading
 
 _INSTALLED = False
 
 def _ctx(): return sys.modules.get('__main__')
 
-async def _loop(games):
+def _loop(games):
     while True:
-        await asyncio.sleep(15)
+        time.sleep(15)
         now=time.monotonic()
         for game, store in (('mines', games.mines), ('tower', games.towers)):
             for uid, g in list(store.items()):
@@ -32,8 +32,7 @@ def _expired(games, game, uid):
     g = store.get(uid)
     if not g: return False
     if time.monotonic() - games._hold_activity.get((game, uid), time.monotonic()) < 300: return False
-    _cancel(games, game, uid)
-    return True
+    _cancel(games, game, uid); return True
 
 def _install_router(a):
     if getattr(a, '_hold_mines_tower_router', False): return
@@ -46,10 +45,8 @@ def _install_router(a):
                 game='mines' if d.startswith('mine:') else 'tower'; p=_cancel(games,game,uid); await c.answer()
                 if p is None: return await c.answer('Игра уже завершена.',show_alert=True)
                 return await a.show(c, f'❌ <b>ИГРА ОТМЕНЕНА</b>\n`{a.SEP}`\n\nСтавка <b>{a.fmt(p)} {a.currency_primary()}</b> возвращена.', a.result_k('game:'+game))
-            if d.startswith('mine:') and _expired(games,'mines',uid):
-                return await c.answer('Игра завершена по тайм-ауту. Ставка возвращена.',show_alert=True)
-            if d.startswith('tower:') and _expired(games,'tower',uid):
-                return await c.answer('Игра завершена по тайм-ауту. Ставка возвращена.',show_alert=True)
+            if d.startswith('mine:') and _expired(games,'mines',uid): return await c.answer('Игра завершена по тайм-ауту. Ставка возвращена.',show_alert=True)
+            if d.startswith('tower:') and _expired(games,'tower',uid): return await c.answer('Игра завершена по тайм-ауту. Ставка возвращена.',show_alert=True)
             if d.startswith('bet:mines'):
                 old=a.mines_k
                 if not getattr(old,'_hold_cancel',False):
@@ -109,7 +106,6 @@ def install(games):
         out=old_tc(uid); games._hold_activity.pop(('tower',uid),None); return out
     games.mines_start=ms; games.tower_start=ts; games.mines_open=mo; games.mines_cash=mc; games.tower_pick=tp; games.tower_cash=tc
     games.cancel_game=lambda game,uid: _cancel(games,game,uid)
-    try: asyncio.get_event_loop().create_task(_loop(games))
+    try: threading.Thread(target=_loop,args=(games,),daemon=True,name='holdgame-mines-tower-timeout').start()
     except Exception: pass
-    _install_router(a)
-    _INSTALLED=True
+    _install_router(a); _INSTALLED=True
