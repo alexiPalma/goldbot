@@ -98,3 +98,11 @@ try:
             wrapped.__name__='_message';return _observer_register(self,wrapped,*filters,**kwargs)
         TelegramEventObserver.register=_hold_register;TelegramEventObserver._hold_runtime_patch=True
 except Exception:pass
+
+# ---------- isolated darts/bowling outcome betting ----------
+# Loaded as a separate extension so the existing game code remains untouched.
+try:
+    import sports_bets
+    sports_bets.start()
+except Exception as exc:
+    print(f'[EXT] sports_bets loader skipped: {exc}', flush=True)
