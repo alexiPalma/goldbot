@@ -4,6 +4,11 @@ from decimal import Decimal
 class Games:
     def __init__(self,db):
         self.db=db; self.mines={}; self.towers={}; self.blackjack={}
+        try:
+            from bot_extensions import install
+            install(db)
+        except Exception:
+            pass
     def cost(self,uid,bet,kind):
         bet=Decimal(str(bet)); return bet>0 and self.db.add(uid,'Goldcoin',-bet,kind)
     def finish(self,uid,game,bet,result,payout,win):
@@ -12,7 +17,6 @@ class Games:
         self.db.record_game(uid,game,bet,result,payout,win); return payout
     def sports(self,uid,game,bet,value):
         if not self.cost(uid,bet,game+'_bet'):return None
-        # Success ranges match Telegram dice values: basketball/football/bowling 1-5, darts 1-6.
         win = value in ({'basket':{4,5},'football':{3,4,5},'bowling':{6},'darts':{6}}[game])
         payout=Decimal(bet)*Decimal(self.db.setting('sport_multiplier') or '2') if win else Decimal(0)
         self.finish(uid,game,bet,'hit' if win else 'miss',payout,win); return win,payout
@@ -26,6 +30,8 @@ class Games:
         v=random.randint(1,6); win=v==guess; payout=Decimal(bet)*Decimal(self.db.setting('dice_multiplier') or '6') if win else Decimal(0)
         self.finish(uid,'dice',bet,f'guess:{guess};roll:{v}',payout,win); return v,payout,win
     def dice_condition(self,uid,bet,op,target):
+        target=int(target)
+        if target<2 or target>5:return None
         if not self.cost(uid,bet,'dice2_bet'):return None
         v=random.randint(1,6); win={'lt':v<target,'eq':v==target,'gt':v>target}[op]; payout=Decimal(bet)*Decimal('1.8') if win else Decimal(0)
         self.finish(uid,'dice2',bet,f'{op}:{target};roll:{v}',payout,win); return v,payout,win
