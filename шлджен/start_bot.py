@@ -39,6 +39,23 @@ try:
   n=getattr(h.callback,'__name__','');return 0 if n=='bank_callback' else (1 if h.callback is vx._callback else 2)
  r.callback_query.handlers.sort(key=ck)
 except Exception:pass
+# Button ownership: only the user who received a button can press it.
+_OWN={}
+_old_answer=Message.answer
+if not getattr(Message,'_hold_owner_patch',False):
+ async def _answer(self,*a,**kw):
+  out=await _old_answer(self,*a,**kw)
+  try:
+   if getattr(out,'reply_markup',None) is not None:_OWN[(out.chat.id,out.message_id)]=self.from_user.id
+  except:pass
+  return out
+ Message.answer=_answer;Message._hold_owner_patch=True
+async def _owner(c):
+ uid=_OWN.get((c.message.chat.id,c.message.message_id))
+ if uid is not None and uid!=c.from_user.id:await c.answer();return
+r.callback_query.register(_owner)
+try:r.callback_query.handlers.insert(0,r.callback_query.handlers.pop())
+except:pass
 # Every sender is registered even when using a slash command.
 async def register_user(m):db.user(m.from_user.id,m.from_user.username,m.from_user.first_name);raise SkipHandler()
 r.message.register(register_user,F.text)
