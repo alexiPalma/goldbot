@@ -105,7 +105,14 @@ def start():
     import threading
     def loop():
         while True:
-            try:patch_router()
+            try:
+                patch_router()
+                aa=a()
+                if aa is not None and hasattr(aa,'games'):
+                    try:
+                        import mines_tower_timeout
+                        mines_tower_timeout.install(aa.games)
+                    except Exception as e: print(f'[EXT] Mines/Tower timeout: {e}',flush=True)
             except Exception as e:print(f'[EXT] sports_bets: {e}',flush=True)
             time.sleep(.2)
     threading.Thread(target=loop,daemon=True,name='hold-sports-bets').start()
